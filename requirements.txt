@@ -1,0 +1,15 @@
+# StreamVAD local data-conversion tools
+#
+# tools/build_streamvad_weak_supervision.py and
+# tools/audit_streamvad_compact_cot.py currently use only the Python standard
+# library. Keep this file intentionally empty of Python packages until the
+# StreamVAD loader or training code adds real runtime dependencies.
+#
+# Required system tool for formal timing:
+#   ffprobe, provided by FFmpeg
+#
+# macOS:
+#   brew install ffmpeg
+#
+# Ubuntu/Debian:
+#   sudo apt-get install ffmpeg
