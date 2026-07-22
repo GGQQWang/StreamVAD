@@ -7,6 +7,10 @@ from .datasets import (
     collate_stage1,
     collate_stage2_gate,
 )
+from .streammind_adapter import (
+    build_streammind_stage1_batch,
+    build_streammind_stage2_gate_batch,
+)
 
 __all__ = [
     "IGNORE_INDEX",
@@ -14,5 +18,6 @@ __all__ = [
     "StreamVADStage2GateDataset",
     "collate_stage1",
     "collate_stage2_gate",
+    "build_streammind_stage1_batch",
+    "build_streammind_stage2_gate_batch",
 ]
-
