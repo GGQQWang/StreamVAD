@@ -13,3 +13,7 @@
 #
 # Ubuntu/Debian:
 #   sudo apt-get install ffmpeg
+#
+# Optional for streamvad.data loaders with decode_video=True:
+#   torch
+#   torchvision
