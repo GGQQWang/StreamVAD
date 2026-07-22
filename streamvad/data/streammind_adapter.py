@@ -16,6 +16,7 @@ def build_streammind_stage1_batch(
     *,
     tokenizer: Any | None = None,
     image_processor: Any | None = None,
+    expand_square: bool = True,
     prompt: str = DEFAULT_STAGE1_PROMPT,
 ) -> dict[str, Any]:
     """Build a Stage 1 batch without exposing audit-only fields.
@@ -24,7 +25,10 @@ def build_streammind_stage1_batch(
     for smoke tests. When a tokenizer is supplied later, this function can be
     extended to emit StreamMind ``input_ids`` and language-model labels.
     """
-    videos = [_maybe_process_frames(sample.get("frames"), image_processor) for sample in samples]
+    videos = [
+        _maybe_process_frames(sample.get("frames"), image_processor, expand_square=expand_square)
+        for sample in samples
+    ]
     batch: dict[str, Any] = {
         "images": [videos, ["video"] * len(videos)],
         "video": [sample["video"] for sample in samples],
@@ -43,13 +47,17 @@ def build_streammind_stage2_gate_batch(
     samples: list[dict[str, Any]],
     *,
     image_processor: Any | None = None,
+    expand_square: bool = True,
 ) -> dict[str, Any]:
     """Build a Stage 2 Gate batch with ``gate_labels`` preserved.
 
     Returned labels may contain ``-100`` and must be used with
     ``ignore_index=-100`` in the Gate loss.
     """
-    videos = [_maybe_process_frames(sample.get("frames"), image_processor) for sample in samples]
+    videos = [
+        _maybe_process_frames(sample.get("frames"), image_processor, expand_square=expand_square)
+        for sample in samples
+    ]
     labels = [int(sample["gate_label"]) for sample in samples]
     return {
         "images": [videos, ["video"] * len(videos)],
@@ -61,7 +69,7 @@ def build_streammind_stage2_gate_batch(
     }
 
 
-def _maybe_process_frames(frames: Any, image_processor: Any | None) -> Any:
+def _maybe_process_frames(frames: Any, image_processor: Any | None, *, expand_square: bool) -> Any:
     if frames is None or image_processor is None:
         return frames
     try:
@@ -69,8 +77,29 @@ def _maybe_process_frames(frames: Any, image_processor: Any | None) -> Any:
     except ImportError as exc:
         raise ImportError("image_processor path requires pillow") from exc
 
-    images = [Image.fromarray(frame.cpu().numpy() if hasattr(frame, "cpu") else frame) for frame in frames]
+    background_color = _processor_background_color(image_processor)
+    images = []
+    for frame in frames:
+        image = Image.fromarray(frame.cpu().numpy() if hasattr(frame, "cpu") else frame)
+        if expand_square:
+            image = _expand2square(image, background_color)
+        images.append(image)
     return image_processor.preprocess(images, return_tensors="pt")["pixel_values"]
+
+
+def _processor_background_color(image_processor: Any) -> tuple[int, int, int]:
+    image_mean = getattr(image_processor, "image_mean", (0.0, 0.0, 0.0))
+    return tuple(int(float(channel) * 255) for channel in image_mean[:3])
+
+
+def _expand2square(image: Any, background_color: tuple[int, int, int]) -> Any:
+    width, height = image.size
+    if width == height:
+        return image
+    size = max(width, height)
+    result = image.new(image.mode, (size, size), background_color)
+    result.paste(image, ((size - width) // 2, (size - height) // 2))
+    return result
 
 
 def _tokenize_stage1_text(prompts: list[str], targets: list[str], tokenizer: Any) -> dict[str, Any]:

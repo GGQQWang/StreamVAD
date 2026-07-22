@@ -29,7 +29,11 @@ def main() -> None:
     parser.add_argument("--stage1-num-frames", type=int, default=32)
     parser.add_argument("--stage2-num-frames", type=int, default=8)
     parser.add_argument("--batch-size", type=int, default=2)
+    parser.add_argument("--image-processor", help="Optional local path or HF id for AutoImageProcessor.")
+    parser.add_argument("--no-expand-square", action="store_true")
     args = parser.parse_args()
+
+    image_processor = _load_image_processor(args.image_processor) if args.image_processor else None
 
     s1 = StreamVADStage1Dataset(
         args.stage1_jsonl,
@@ -48,8 +52,16 @@ def main() -> None:
 
     stage1_samples = [s1[idx] for idx in range(min(args.batch_size, len(s1)))]
     stage2_samples = [s2[idx] for idx in range(min(args.batch_size, len(s2)))]
-    stage1_batch = build_streammind_stage1_batch(stage1_samples)
-    stage2_batch = build_streammind_stage2_gate_batch(stage2_samples)
+    stage1_batch = build_streammind_stage1_batch(
+        stage1_samples,
+        image_processor=image_processor,
+        expand_square=not args.no_expand_square,
+    )
+    stage2_batch = build_streammind_stage2_gate_batch(
+        stage2_samples,
+        image_processor=image_processor,
+        expand_square=not args.no_expand_square,
+    )
 
     print("=== Stage 1 ===")
     print("dataset_len:", len(s1))
@@ -61,6 +73,8 @@ def main() -> None:
     print("first_target_preview:", stage1_batch["target_text"][0][:180].replace("\n", "\\n"))
     if args.decode_video:
         print("first_frames_shape:", tuple(stage1_samples[0]["frames"].shape))
+    if image_processor is not None:
+        print("first_processed_video_shape:", tuple(stage1_batch["images"][0][0].shape))
 
     print("=== Stage 2 ===")
     print("dataset_len:", len(s2))
@@ -72,6 +86,16 @@ def main() -> None:
     print("gate_labels:", stage2_batch["gate_labels"])
     if args.decode_video:
         print("first_frames_shape:", tuple(stage2_samples[0]["frames"].shape))
+    if image_processor is not None:
+        print("first_processed_video_shape:", tuple(stage2_batch["images"][0][0].shape))
+
+
+def _load_image_processor(name_or_path: str):
+    try:
+        from transformers import AutoImageProcessor
+    except ImportError as exc:
+        raise ImportError("--image-processor requires transformers") from exc
+    return AutoImageProcessor.from_pretrained(name_or_path)
 
 
 if __name__ == "__main__":
