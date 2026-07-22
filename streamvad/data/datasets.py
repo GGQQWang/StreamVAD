@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import subprocess
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -99,10 +100,76 @@ def _load_video_clip(
     except ImportError as exc:
         raise ImportError("decode_video=True requires torch and torchvision") from exc
 
-    frames, _, _ = read_video(video_path, start_pts=start_sec, end_pts=end_sec, pts_unit="sec")
+    try:
+        frames, _, _ = read_video(video_path, start_pts=start_sec, end_pts=end_sec, pts_unit="sec")
+    except Exception:
+        return _load_video_clip_ffmpeg(video_path, start_sec, end_sec, num_frames)
     if frames.numel() == 0:
         raise ValueError(f"no frames decoded from {video_path} between {start_sec} and {end_sec}")
     if num_frames <= 0:
+        return frames
+    indices = torch.linspace(0, frames.shape[0] - 1, steps=num_frames).round().long()
+    return frames.index_select(0, indices)
+
+
+def _probe_video_size(video_path: str) -> tuple[int, int]:
+    cmd = [
+        "ffprobe",
+        "-v",
+        "error",
+        "-select_streams",
+        "v:0",
+        "-show_entries",
+        "stream=width,height",
+        "-of",
+        "csv=p=0:s=x",
+        video_path,
+    ]
+    result = subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=15)
+    width_text, height_text = result.stdout.strip().split("x", 1)
+    return int(width_text), int(height_text)
+
+
+def _load_video_clip_ffmpeg(
+    video_path: str,
+    start_sec: float,
+    end_sec: float,
+    num_frames: int,
+) -> Any:
+    try:
+        import torch
+    except ImportError as exc:
+        raise ImportError("decode_video=True requires torch") from exc
+
+    if num_frames <= 0:
+        raise ValueError("ffmpeg fallback requires num_frames > 0")
+    duration = max(end_sec - start_sec, 1e-3)
+    width, height = _probe_video_size(video_path)
+    fps = max(num_frames / duration, 1e-3)
+    cmd = [
+        "ffmpeg",
+        "-v",
+        "error",
+        "-ss",
+        f"{start_sec:.6f}",
+        "-t",
+        f"{duration:.6f}",
+        "-i",
+        video_path,
+        "-vf",
+        f"fps={fps:.8f},format=rgb24",
+        "-f",
+        "rawvideo",
+        "pipe:1",
+    ]
+    result = subprocess.run(cmd, check=True, capture_output=True, timeout=60)
+    frame_size = width * height * 3
+    if frame_size <= 0 or len(result.stdout) < frame_size:
+        raise ValueError(f"ffmpeg decoded no frames from {video_path} between {start_sec} and {end_sec}")
+    usable = len(result.stdout) - (len(result.stdout) % frame_size)
+    frames = torch.frombuffer(bytearray(result.stdout[:usable]), dtype=torch.uint8)
+    frames = frames.reshape(-1, height, width, 3)
+    if frames.shape[0] == num_frames:
         return frames
     indices = torch.linspace(0, frames.shape[0] - 1, steps=num_frames).round().long()
     return frames.index_select(0, indices)
