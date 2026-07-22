@@ -97,7 +97,9 @@ def _expand2square(image: Any, background_color: tuple[int, int, int]) -> Any:
     if width == height:
         return image
     size = max(width, height)
-    result = image.new(image.mode, (size, size), background_color)
+    from PIL import Image
+
+    result = Image.new(image.mode, (size, size), background_color)
     result.paste(image, ((size - width) // 2, (size - height) // 2))
     return result
 
