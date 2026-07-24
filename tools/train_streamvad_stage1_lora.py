@@ -115,7 +115,7 @@ class StreamVADStage1StreamMindDataset:
             require_video_exists=True,
             require_reliable_timing=require_reliable_timing,
             num_frames=num_frames,
-            include_audit_fields=False,
+            include_metadata=False,
         )
         if max_samples is not None:
             if max_samples <= 0:
