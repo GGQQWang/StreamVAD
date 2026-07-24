@@ -32,28 +32,29 @@ The normalized video key uses the original `video` field when present, otherwise
 
 The current VAD-R1 SFT train JSONL has no duplicate `video` or `path` entries, but the script still reports duplicate video keys and duplicate paths.
 
-## Stage 1 Compact CoT
+## Stage 1 Abnormal Event CoT
 
-Stage 1 rows provide compact text supervision:
+Stage 1 v0 rows provide abnormal-event semantic alignment supervision. Only abnormal VAD-R1 rows with valid `start/end` boundaries are emitted.
 
 ```text
-Scene prior:
-<normal scene behavior or rules>
-
-Observation:
-<visible people, actions, and events>
-
-Answer:
-Normal or Abnormal
+<think>
+The clip shows <visible abnormal event>.
+The behavior is abnormal because <visible reason>.
+</think>
+<answer>
+Abnormal
+</answer>
 ```
 
 Important rules:
 
 - `scene_prior` and `observation` are extracted from VAD-R1 `think` and `answer`.
+- `reason` is extracted from `<why>` when available, otherwise from scene-prior text.
 - The converter does not generate observation text from the filename or `anomaly_type`.
 - Long consequences, social impact language, repeated descriptions, and weakly visible reasoning are filtered by simple rules.
 - If text extraction is unreliable, `needs_review` is set to `true`.
 - The original `think` and `answer` are preserved in Stage 1 output for audit.
+- Normal rows are skipped in Stage 1 v0. Normal videos remain available for Stage 2 hold/trigger gate data.
 
 Key Stage 1 fields:
 
@@ -63,7 +64,10 @@ Key Stage 1 fields:
 - `original_video`: original VAD-R1 path before rewrite
 - `video_id`, `video_key`
 - `clip_start`, `clip_end`
-- `scene_prior`, `observation`, `answer`, `target_text`
+- `event_start_sec`, `event_end_sec`
+- `event_token_fractions`: `[0.1, 0.5, 0.9]`
+- `event_token_policy`: `ordered_start_middle_end`
+- `scene_prior`, `observation`, `reason`, `answer`, `target_text`
 - `original_think`, `original_answer`
 - `original_start`, `original_end`, `original_unit`
 - `total_frames`, `fps`, `timing_source`, `timing_reliable`
@@ -80,15 +84,15 @@ Defaults:
 - `--pre-context-sec 2.0`
 - `--post-context-sec 2.0`
 
-For normal samples, the current version uses the full short video duration when timing is available.
+At training time, StreamVAD selects the three ordered event perception tokens and inserts only those visual embeddings at the `<video>` position in the LLM prompt.
 
 ## Stage 2 Gate Data
 
 Stage 2 is only for Cognition Gate weak supervision:
 
 ```text
-0 = silence
-1 = response
+hold = class id 0
+trigger = class id 1
 -100 = ignore
 ```
 
@@ -108,8 +112,9 @@ Key Stage 2 fields:
 - `original_video`: original VAD-R1 path before rewrite
 - `video_id`, `video_key`
 - `chunk_start`, `chunk_end`
-- `gate_label`: `0`, `1`, or `-100`
-- `gate_text`: `silence`, `response`, or `ignore`
+- `gate_action`: `hold`, `trigger`, or `ignore`
+- `gate_label`: `0`, `1`, or `-100`; this is a configured class id, not a tokenizer token id
+- `gate_text`: legacy alias currently equal to `gate_action`
 - `trigger_reason`: final selected reason, one of `initialization`, `anomaly_start`, `anomaly_end`, `none`
 - `trigger_sources`: all trigger sources covered by this chunk
 - `original_start`, `original_end`, `original_unit`
@@ -126,16 +131,16 @@ Videos are split into fixed chunks. Default:
 
 For normal videos:
 
-- First valid chunk: `response`, `trigger_reason = initialization`.
-- Later chunks: `silence`, `trigger_reason = none`.
+- First valid chunk: `trigger`, `trigger_reason = initialization`.
+- Later chunks: `hold`, `trigger_reason = none`.
 
 For abnormal videos:
 
-- First valid chunk: `response`.
-- Exactly one chunk nearest to `start` is selected as `response`.
-- Exactly one chunk nearest to `end` is selected as `response`.
-- Boundary-near chunks that were not selected are `ignore`, not `silence`.
-- Other stable chunks are `silence`.
+- First valid chunk: `trigger`.
+- Exactly one chunk nearest to `start` is selected as `trigger`.
+- Exactly one chunk nearest to `end` is selected as `trigger`.
+- Boundary-near chunks that were not selected are `ignore`, not `hold`.
+- Other stable chunks are `hold`.
 
 Boundary-near ambiguity is controlled by:
 
@@ -185,9 +190,9 @@ Example reported config:
 
 Validation should not rely on accuracy alone. At minimum, record:
 
-- response precision
-- response recall
-- response F1
+- trigger precision
+- trigger recall
+- trigger F1
 - whether each abnormal start boundary is triggered at least once
 - average trigger latency
 - duplicate trigger count
@@ -198,7 +203,7 @@ The audit sampler is:
 
 - `tools/audit_streamvad_compact_cot.py`
 
-It reads Stage 1 converted JSONL and writes a human-review table. Default sampling is 50 normal and 50 abnormal rows, stratified across `original_source` when possible.
+It reads Stage 1 converted JSONL and writes a human-review table. Stage 1 v0 contains abnormal rows only.
 
 Example:
 
@@ -211,7 +216,7 @@ python3 tools/audit_streamvad_compact_cot.py \
   --seed 42
 ```
 
-Audit rows include `video_id`, `video`, `original_think`, `original_answer`, `scene_prior`, `observation`, `answer`, `needs_review`, `review_status`, and `review_note`.
+Audit rows include `video_id`, `video`, `original_think`, `original_answer`, `scene_prior`, `observation`, `reason`, `event_start_sec`, `event_end_sec`, `answer`, `needs_review`, `review_status`, and `review_note`.
 
 Reviewers should check whether:
 
@@ -219,13 +224,16 @@ Reviewers should check whether:
 - `scene_prior` accidentally includes abnormal events.
 - `observation` is based on visible video facts.
 - future outcomes, social consequences, or subjective inference leaked into compact text.
+- `target_text` uses the expected `<think>...</think><answer>Abnormal</answer>` format.
 - text is overly long, repeated, empty, or incorrectly truncated.
 - normal/abnormal labels match the original answer.
 - filename or `anomaly_type` leaked the answer.
 
 Do not hand-edit generated training JSONL. If audit finds a systematic problem, change the converter and regenerate.
 
-## Current Local Run
+## Previous Local Run
+
+The following numbers were produced by an earlier converter version that emitted both normal and abnormal Stage 1 rows. Regenerate after the Stage 1 v0 abnormal-event change before using these counts for training decisions.
 
 Command:
 

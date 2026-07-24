@@ -4,8 +4,8 @@ Scope: static code audit only. No datasets, checkpoints, GPU setup, package inst
 
 Audited repositories:
 
-- `StreamMind/` cloned from `https://github.com/xinding-bot/StreamMind.git`
-- `Vad-R1/` cloned from `https://github.com/wbfwonderful/Vad-R1.git`
+- `StreamMind/` cloned from `https://github.com/xinding-bot/StreamMind.git`, commit `d873dc5559d3bb9457882fe92c5898449cb4d8d4`
+- `Vad-R1/` vendored from `https://github.com/wbfwonderful/Vad-R1.git`; this workspace copy is not an independent git checkout, and is recorded in the parent repository at commit `85fc8553c813db48dcd2fb26982b1c581714b3b5`
 
 ## 1. StreamMind Training Entries
 

@@ -123,7 +123,7 @@ def infer_label(row: dict[str, Any]) -> str:
     return "abnormal"
 
 
-def extract_compact_supervision(row: dict[str, Any]) -> tuple[str, str, bool]:
+def extract_compact_supervision(row: dict[str, Any]) -> tuple[str, str, str, bool]:
     think = row.get("think") or ""
     answer = row.get("answer") or ""
     label = infer_label(row)
@@ -131,6 +131,7 @@ def extract_compact_supervision(row: dict[str, Any]) -> tuple[str, str, bool]:
     step1 = extract_tag(think, "step1")
     step2 = extract_tag(think, "step2")
     what = extract_tag(answer, "what")
+    why = extract_tag(answer, "why")
 
     scene_prior = strip_low_value_reasoning(step1)
     if label == "abnormal":
@@ -145,7 +146,8 @@ def extract_compact_supervision(row: dict[str, Any]) -> tuple[str, str, bool]:
     if not think.strip() or not answer.strip():
         needs_review = True
 
-    return scene_prior, observation, needs_review
+    reason = strip_low_value_reasoning(why) or scene_prior
+    return scene_prior, observation, reason, needs_review
 
 
 def probe_video_duration(path: str) -> tuple[float | None, float | None]:
@@ -181,7 +183,7 @@ def probe_video_duration(path: str) -> tuple[float | None, float | None]:
             den_f = float(den)
             fps = float(num) / den_f if den_f else None
         return duration, fps
-    except Exception:
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, json.JSONDecodeError, KeyError, ValueError):
         return None, None
 
 
@@ -253,28 +255,37 @@ def boundary_info(row: dict[str, Any], fps: float, duration_sec: float | None) -
     return info
 
 
-def make_target_text(scene_prior: str, observation: str, answer: str) -> str:
-    return f"Scene prior:\n{scene_prior}\n\nObservation:\n{observation}\n\nAnswer:\n{answer.capitalize()}"
+def make_target_text(observation: str, reason: str) -> str:
+    reason_text = reason[:1].lower() + reason[1:] if reason else "the visible behavior departs from normal activity."
+    return (
+        "<think>\n"
+        f"The clip shows {observation}\n"
+        f"The behavior is abnormal because {reason_text}\n"
+        "</think>\n"
+        "<answer>\n"
+        "Abnormal\n"
+        "</answer>"
+    )
 
 
-def make_stage1(row: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
+def make_stage1(row: dict[str, Any], args: argparse.Namespace) -> dict[str, Any] | None:
     label = infer_label(row)
+    if label != "abnormal":
+        return None
     timing = get_video_timing(row, args)
     duration = timing["duration_sec"]
-    scene_prior, observation, needs_review = extract_compact_supervision(row)
+    scene_prior, observation, reason, needs_review = extract_compact_supervision(row)
     boundary = boundary_info(row, timing["fps"], duration)
 
     if label == "abnormal" and boundary["valid"] and duration is not None:
         clip_start = clamp(boundary["start_sec"] - args.pre_context_sec, 0.0, duration)
         clip_end = clamp(boundary["end_sec"] + args.post_context_sec, 0.0, duration)
     else:
-        clip_start = 0.0
-        clip_end = duration
+        return None
 
     if clip_end is None:
-        needs_review = True
+        return None
 
-    answer = "normal" if label == "normal" else "abnormal"
     return {
         "source": "vadr1",
         "original_source": row.get("source"),
@@ -284,10 +295,15 @@ def make_stage1(row: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]
         "original_video": original_video_path(row),
         "clip_start": round(clip_start, 6) if clip_start is not None else None,
         "clip_end": round(clip_end, 6) if clip_end is not None else None,
+        "event_start_sec": round(boundary["start_sec"], 6),
+        "event_end_sec": round(boundary["end_sec"], 6),
+        "event_token_fractions": [0.1, 0.5, 0.9],
+        "event_token_policy": "ordered_start_middle_end",
         "scene_prior": scene_prior,
         "observation": observation,
-        "answer": answer,
-        "target_text": make_target_text(scene_prior, observation, answer),
+        "reason": reason,
+        "answer": "abnormal",
+        "target_text": make_target_text(observation, reason),
         "original_think": row.get("think"),
         "original_answer": row.get("answer"),
         "original_start": boundary["original_start"],
@@ -331,7 +347,8 @@ def make_stage2(row: dict[str, Any], args: argparse.Namespace) -> list[dict[str,
                 "chunk_start": round(chunk_start, 6),
                 "chunk_end": round(chunk_end, 6),
                 "gate_label": 0,
-                "gate_text": "silence",
+                "gate_action": "hold",
+                "gate_text": "hold",
                 "trigger_reason": "none",
                 "trigger_sources": [],
                 "original_start": boundary["original_start"],
@@ -344,7 +361,7 @@ def make_stage2(row: dict[str, Any], args: argparse.Namespace) -> list[dict[str,
                 "weak_supervision": "anomaly-boundary weak supervision",
             }
         )
-    mark_response(chunks, 0, "initialization")
+    mark_trigger(chunks, 0, "initialization")
     if label == "abnormal" and boundary["valid"]:
         selected: dict[str, int] = {}
         selected["anomaly_start"] = nearest_chunk_index(chunks, boundary["start_sec"])
@@ -354,7 +371,7 @@ def make_stage2(row: dict[str, Any], args: argparse.Namespace) -> list[dict[str,
             if point is None:
                 continue
             chosen_idx = selected[reason]
-            mark_response(chunks, chosen_idx, reason)
+            mark_trigger(chunks, chosen_idx, reason)
             for idx, chunk in enumerate(chunks):
                 distance = distance_to_interval_point(point, chunk["chunk_start"], chunk["chunk_end"])
                 if distance <= args.boundary_radius_sec and idx != chosen_idx:
@@ -362,6 +379,7 @@ def make_stage2(row: dict[str, Any], args: argparse.Namespace) -> list[dict[str,
         for idx in ignored:
             if chunks[idx]["gate_label"] != 1:
                 chunks[idx]["gate_label"] = IGNORE_INDEX
+                chunks[idx]["gate_action"] = "ignore"
                 chunks[idx]["gate_text"] = "ignore"
     return chunks
 
@@ -378,13 +396,14 @@ def nearest_chunk_index(chunks: list[dict[str, Any]], point: float | None) -> in
     )
 
 
-def mark_response(chunks: list[dict[str, Any]], idx: int, reason: str) -> None:
+def mark_trigger(chunks: list[dict[str, Any]], idx: int, reason: str) -> None:
     chunk = chunks[idx]
     sources = chunk.setdefault("trigger_sources", [])
     if reason not in sources:
         sources.append(reason)
     chunk["gate_label"] = 1
-    chunk["gate_text"] = "response"
+    chunk["gate_action"] = "trigger"
+    chunk["gate_text"] = "trigger"
     chunk["trigger_reason"] = choose_final_trigger_reason(sources)
 
 
@@ -483,13 +502,13 @@ def report(
     print(f"abnormal_videos: {stats['video_labels'].get('abnormal', 0)}")
     print(f"stage1_normal_samples: {stage1_labels.get('normal', 0)}")
     print(f"stage1_abnormal_samples: {stage1_labels.get('abnormal', 0)}")
-    print(f"stage2_response: {stage2_labels.get('response', 0)} ({stage2_labels.get('response', 0) / total_stage2:.4f})")
-    print(f"stage2_silence: {stage2_labels.get('silence', 0)} ({stage2_labels.get('silence', 0) / total_stage2:.4f})")
+    print(f"stage2_trigger: {stage2_labels.get('trigger', 0)} ({stage2_labels.get('trigger', 0) / total_stage2:.4f})")
+    print(f"stage2_hold: {stage2_labels.get('hold', 0)} ({stage2_labels.get('hold', 0) / total_stage2:.4f})")
     print(f"stage2_ignore: {stage2_labels.get('ignore', 0)} ({stage2_labels.get('ignore', 0) / total_stage2:.4f})")
-    silence = stage2_labels.get("silence", 0)
-    response = stage2_labels.get("response", 0)
-    ratio = response / silence if silence else float("inf")
-    print(f"stage2_response_to_silence_ratio: {ratio:.6f}")
+    hold = stage2_labels.get("hold", 0)
+    trigger = stage2_labels.get("trigger", 0)
+    ratio = trigger / hold if hold else float("inf")
+    print(f"stage2_trigger_to_hold_ratio: {ratio:.6f}")
     print(f"trigger_initialization: {reasons.get('initialization', 0)}")
     print(f"trigger_anomaly_start: {reasons.get('anomaly_start', 0)}")
     print(f"trigger_anomaly_end: {reasons.get('anomaly_end', 0)}")
@@ -519,8 +538,8 @@ def report(
 def print_weight_recommendations(stage2_train: list[dict[str, Any]], args: argparse.Namespace) -> None:
     weights = compute_class_weights(stage2_train, args.weight_strategy, args.manual_class_weights, args.effective_beta)
     print("stage2_weight_strategy:", args.weight_strategy)
-    print("recommended_cross_entropy_weight_silence:", f"{weights[0]:.6f}")
-    print("recommended_cross_entropy_weight_response:", f"{weights[1]:.6f}")
+    print("recommended_cross_entropy_weight_hold:", f"{weights[0]:.6f}")
+    print("recommended_cross_entropy_weight_trigger:", f"{weights[1]:.6f}")
     print("ignore_index:", IGNORE_INDEX)
     print("config_example:", json.dumps({"gate_loss_weight": [round(weights[0], 6), round(weights[1], 6)], "ignore_index": IGNORE_INDEX}, ensure_ascii=False))
 
@@ -532,40 +551,40 @@ def compute_class_weights(
     beta: float,
 ) -> tuple[float, float]:
     counts = Counter(row["gate_label"] for row in stage2_rows if row["gate_label"] != IGNORE_INDEX)
-    silence = counts.get(0, 0)
-    response = counts.get(1, 0)
+    hold = counts.get(0, 0)
+    trigger = counts.get(1, 0)
     if manual:
         return parse_manual_class_weights(manual)
-    if silence == 0 or response == 0:
+    if hold == 0 or trigger == 0:
         return 1.0, 1.0
     if strategy == "manual":
         return 1.0, 1.0
     if strategy == "inverse_frequency":
-        return 1.0 / silence, 1.0 / response
+        return 1.0 / hold, 1.0 / trigger
     if strategy == "normalized_inverse_frequency":
-        total = silence + response
-        return total / (2.0 * silence), total / (2.0 * response)
+        total = hold + trigger
+        return total / (2.0 * hold), total / (2.0 * trigger)
     if strategy == "effective_number":
-        silence_eff = (1.0 - beta**silence) / (1.0 - beta)
-        response_eff = (1.0 - beta**response) / (1.0 - beta)
-        silence_w = 1.0 / silence_eff
-        response_w = 1.0 / response_eff
-        scale = 2.0 / (silence_w + response_w)
-        return silence_w * scale, response_w * scale
+        hold_eff = (1.0 - beta**hold) / (1.0 - beta)
+        trigger_eff = (1.0 - beta**trigger) / (1.0 - beta)
+        hold_w = 1.0 / hold_eff
+        trigger_w = 1.0 / trigger_eff
+        scale = 2.0 / (hold_w + trigger_w)
+        return hold_w * scale, trigger_w * scale
     raise ValueError(f"unknown weight strategy: {strategy}")
 
 
 def parse_manual_class_weights(value: str) -> tuple[float, float]:
     parts = [part.strip() for part in value.split(",")]
     if len(parts) != 2:
-        raise ValueError("--manual-class-weights must use 'silence,response' format")
+        raise ValueError("--manual-class-weights must use 'hold,trigger' format")
     try:
-        silence_weight, response_weight = float(parts[0]), float(parts[1])
+        hold_weight, trigger_weight = float(parts[0]), float(parts[1])
     except ValueError as exc:
         raise ValueError("--manual-class-weights values must be numeric") from exc
-    if silence_weight <= 0 or response_weight <= 0:
+    if hold_weight <= 0 or trigger_weight <= 0:
         raise ValueError("--manual-class-weights values must be positive")
-    return silence_weight, response_weight
+    return hold_weight, trigger_weight
 
 
 def print_examples(stage1: list[dict[str, Any]], label: str, n: int, seed: int) -> None:
@@ -605,7 +624,7 @@ def main() -> None:
         choices=("manual", "inverse_frequency", "normalized_inverse_frequency", "effective_number"),
         default="normalized_inverse_frequency",
     )
-    parser.add_argument("--manual-class-weights", help="Comma-separated silence,response weights, for example 0.15,0.85.")
+    parser.add_argument("--manual-class-weights", help="Comma-separated hold,trigger weights, for example 0.15,0.85.")
     parser.add_argument("--effective-beta", type=float, default=0.9999)
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
@@ -630,8 +649,8 @@ def main() -> None:
         raise ValueError(f"--require-reliable-timing blocked {len(unreliable_rows)} rows without ffprobe timing; examples: {examples}")
 
     train_rows, val_rows = split_video_groups(rows, args.train_ratio, args.seed)
-    stage1_train = [make_stage1(row, args) for row in train_rows]
-    stage1_val = [make_stage1(row, args) for row in val_rows]
+    stage1_train = [sample for row in train_rows if (sample := make_stage1(row, args)) is not None]
+    stage1_val = [sample for row in val_rows if (sample := make_stage1(row, args)) is not None]
     stage2_train = [chunk for row in train_rows for chunk in make_stage2(row, args)]
     stage2_val = [chunk for row in val_rows for chunk in make_stage2(row, args)]
     report(rows, train_rows, val_rows, stage1_train, stage1_val, stage2_train, stage2_val, args)

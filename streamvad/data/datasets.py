@@ -18,6 +18,7 @@ from typing import Any, Iterable
 
 IGNORE_INDEX = -100
 GATE_LABELS = {0, 1, IGNORE_INDEX}
+GATE_CLASS_IDS = {"hold": 0, "trigger": 1, "ignore": IGNORE_INDEX}
 
 
 def read_jsonl(path: str | os.PathLike[str]) -> list[dict[str, Any]]:
@@ -102,7 +103,7 @@ def _load_video_clip(
 
     try:
         frames, _, _ = read_video(video_path, start_pts=start_sec, end_pts=end_sec, pts_unit="sec")
-    except Exception:
+    except (RuntimeError, OSError, ValueError):
         return _load_video_clip_ffmpeg(video_path, start_sec, end_sec, num_frames)
     if frames.numel() == 0:
         raise ValueError(f"no frames decoded from {video_path} between {start_sec} and {end_sec}")
@@ -225,6 +226,11 @@ class StreamVADStage1Dataset:
             if not target_text:
                 location = f"{row.get('_jsonl_path', '<unknown>')}:{row.get('_line_no', '?')}"
                 raise ValueError(f"{self.__class__.__name__}: target_text is empty at {location}")
+            event_start = _as_float(row, "event_start_sec", self.__class__.__name__)
+            event_end = _as_float(row, "event_end_sec", self.__class__.__name__)
+            if not (clip_start <= event_start < event_end <= clip_end):
+                location = f"{row.get('_jsonl_path', '<unknown>')}:{row.get('_line_no', '?')}"
+                raise ValueError(f"{self.__class__.__name__}: event range must be inside clip at {location}")
             if self.require_reliable_timing and not _as_bool(row.get("timing_reliable")):
                 location = f"{row.get('_jsonl_path', '<unknown>')}:{row.get('_line_no', '?')}"
                 raise ValueError(f"{self.__class__.__name__}: unreliable timing at {location}")
@@ -243,6 +249,9 @@ class StreamVADStage1Dataset:
             "video": str(row["video"]),
             "clip_start": clip_start,
             "clip_end": clip_end,
+            "event_start_sec": _as_float(row, "event_start_sec", self.__class__.__name__),
+            "event_end_sec": _as_float(row, "event_end_sec", self.__class__.__name__),
+            "event_token_fractions": list(row.get("event_token_fractions") or [0.1, 0.5, 0.9]),
             "target_text": str(row["target_text"]),
         }
         if self.decode_video:
@@ -302,6 +311,17 @@ class StreamVADStage2GateDataset:
             if label not in GATE_LABELS:
                 location = f"{row.get('_jsonl_path', '<unknown>')}:{row.get('_line_no', '?')}"
                 raise ValueError(f"{self.__class__.__name__}: invalid gate_label {label} at {location}")
+            action = str(row.get("gate_action") or row.get("gate_text") or "").strip()
+            if action:
+                expected_label = GATE_CLASS_IDS.get(action)
+                if expected_label is None:
+                    location = f"{row.get('_jsonl_path', '<unknown>')}:{row.get('_line_no', '?')}"
+                    raise ValueError(f"{self.__class__.__name__}: invalid gate_action {action!r} at {location}")
+                if expected_label != label:
+                    location = f"{row.get('_jsonl_path', '<unknown>')}:{row.get('_line_no', '?')}"
+                    raise ValueError(
+                        f"{self.__class__.__name__}: gate_action {action!r} disagrees with gate_label {label} at {location}"
+                    )
             if self.require_reliable_timing and not _as_bool(row.get("timing_reliable")):
                 location = f"{row.get('_jsonl_path', '<unknown>')}:{row.get('_line_no', '?')}"
                 raise ValueError(f"{self.__class__.__name__}: unreliable timing at {location}")
@@ -321,6 +341,7 @@ class StreamVADStage2GateDataset:
             "chunk_start": chunk_start,
             "chunk_end": chunk_end,
             "gate_label": int(row["gate_label"]),
+            "gate_action": str(row.get("gate_action") or row.get("gate_text")),
         }
         if self.decode_video:
             sample["frames"] = _load_video_clip(str(row["video"]), chunk_start, chunk_end, self.num_frames)
@@ -334,6 +355,8 @@ def _stage1_debug_metadata(row: dict[str, Any]) -> dict[str, Any]:
         "video_id": row.get("video_id"),
         "video_key": row.get("video_key"),
         "answer": row.get("answer"),
+        "event_start_sec": row.get("event_start_sec"),
+        "event_end_sec": row.get("event_end_sec"),
         "needs_review": row.get("needs_review"),
         "timing_reliable": row.get("timing_reliable"),
     }
@@ -343,7 +366,7 @@ def _stage2_debug_metadata(row: dict[str, Any]) -> dict[str, Any]:
     return {
         "video_id": row.get("video_id"),
         "video_key": row.get("video_key"),
-        "gate_text": row.get("gate_text"),
+        "gate_action": row.get("gate_action"),
         "trigger_reason": row.get("trigger_reason"),
         "trigger_sources": row.get("trigger_sources"),
         "timing_reliable": row.get("timing_reliable"),
@@ -355,6 +378,9 @@ def collate_stage1(samples: list[dict[str, Any]]) -> dict[str, Any]:
         "video": [sample["video"] for sample in samples],
         "clip_start": [sample["clip_start"] for sample in samples],
         "clip_end": [sample["clip_end"] for sample in samples],
+        "event_start_sec": [sample["event_start_sec"] for sample in samples],
+        "event_end_sec": [sample["event_end_sec"] for sample in samples],
+        "event_token_fractions": [sample["event_token_fractions"] for sample in samples],
         "target_text": [sample["target_text"] for sample in samples],
     }
     if samples and "frames" in samples[0]:

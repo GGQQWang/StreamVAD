@@ -2,6 +2,7 @@
 
 from .datasets import (
     IGNORE_INDEX,
+    GATE_CLASS_IDS,
     StreamVADStage1Dataset,
     StreamVADStage2GateDataset,
     collate_stage1,
@@ -14,6 +15,7 @@ from .streammind_adapter import (
 
 __all__ = [
     "IGNORE_INDEX",
+    "GATE_CLASS_IDS",
     "StreamVADStage1Dataset",
     "StreamVADStage2GateDataset",
     "collate_stage1",

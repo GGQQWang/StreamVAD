@@ -7,7 +7,8 @@ from typing import Any
 
 DEFAULT_STAGE1_PROMPT = (
     "<video>\n"
-    "Describe the scene prior, the visible observation, and whether the video is normal or abnormal."
+    "Describe the abnormal event represented by the visual event tokens. "
+    "Use <think>...</think> and <answer>Abnormal</answer>."
 )
 
 
@@ -34,6 +35,9 @@ def build_streammind_stage1_batch(
         "video": [sample["video"] for sample in samples],
         "clip_start": [sample["clip_start"] for sample in samples],
         "clip_end": [sample["clip_end"] for sample in samples],
+        "event_start_sec": [sample["event_start_sec"] for sample in samples],
+        "event_end_sec": [sample["event_end_sec"] for sample in samples],
+        "event_token_fractions": [sample["event_token_fractions"] for sample in samples],
         "prompt": [prompt for _ in samples],
         "target_text": [sample["target_text"] for sample in samples],
         "task": "streamvad_stage1",
@@ -64,6 +68,7 @@ def build_streammind_stage2_gate_batch(
         "video": [sample["video"] for sample in samples],
         "chunk_start": [sample["chunk_start"] for sample in samples],
         "chunk_end": [sample["chunk_end"] for sample in samples],
+        "gate_action": [sample["gate_action"] for sample in samples],
         "gate_labels": _tensor_long(labels),
         "task": "streamvad_stage2_gate",
     }

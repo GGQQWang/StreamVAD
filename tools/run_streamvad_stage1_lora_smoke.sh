@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-cd "${STREAMVAD_ROOT:-/data3/wgq/StreamVAD}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+cd "${STREAMVAD_ROOT:-${REPO_ROOT}}"
 
 export TRANSFORMERS_OFFLINE="${TRANSFORMERS_OFFLINE:-1}"
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
@@ -18,14 +20,14 @@ torchrun \
   --master_port "${MASTER_PORT:-16677}" \
   --node_rank 0 \
   tools/train_streamvad_stage1_lora.py \
-  --streammind-root "${STREAMMIND_ROOT:-/data3/wgq/StreamVAD/StreamMind}" \
+  --streammind-root "${STREAMMIND_ROOT:-${STREAMVAD_ROOT:-${REPO_ROOT}}/StreamMind}" \
   --streamvad-max-samples "${MAX_SAMPLES}" \
-  --data_path "${STREAMVAD_STAGE1_JSONL:-/data3/wgq/StreamVAD/data/streamvad_weak_supervision/streamvad_stage1_train.jsonl}" \
-  --output_dir "${OUTPUT_DIR:-/data3/wgq/StreamVAD/output/streamvad_stage1_lora_smoke}" \
-  --deepspeed "${DEEPSPEED_CONFIG:-/data3/wgq/StreamVAD/configs/deepspeed_zero2.json}" \
+  --data_path "${STREAMVAD_STAGE1_JSONL:-data/streamvad_weak_supervision/streamvad_stage1_train.jsonl}" \
+  --output_dir "${OUTPUT_DIR:-output/streamvad_stage1_lora_smoke}" \
+  --deepspeed "${DEEPSPEED_CONFIG:-configs/deepspeed_zero2.json}" \
   --version v1_mistral \
-  --model_name_or_path "${MODEL_PATH:-/data3/wgq/models/VideoLLaMA2-7B}" \
-  --vision_tower "${VISION_TOWER:-/data3/wgq/models/clip-vit-large-patch14-336}" \
+  --model_name_or_path "${MODEL_PATH:?set MODEL_PATH to the server VideoLLaMA2 checkpoint path}" \
+  --vision_tower "${VISION_TOWER:?set VISION_TOWER to the server CLIP vision tower path}" \
   --freeze_backbone True \
   --lora_enable True \
   --lora_r "${LORA_R:-16}" \
