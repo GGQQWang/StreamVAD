@@ -13,20 +13,14 @@ GRADIENT_ACCUMULATION_STEPS="${GRADIENT_ACCUMULATION_STEPS:-1}"
 LOCAL_BATCH_SIZE="${LOCAL_BATCH_SIZE:-1}"
 MAX_SAMPLES="${MAX_SAMPLES:-16}"
 
-python -m torch.distributed.run \
-  --nnodes 1 \
-  --nproc_per_node 1 \
-  --master_addr 127.0.0.1 \
-  --master_port "${MASTER_PORT:-16677}" \
-  --node_rank 0 \
-  tools/train_streamvad_stage1_lora.py \
+python tools/train_streamvad_stage1_lora.py \
   --streammind-root "${STREAMMIND_ROOT:-${STREAMVAD_ROOT:-${REPO_ROOT}}/StreamMind}" \
   --streamvad-max-samples "${MAX_SAMPLES}" \
   --data_path "${STREAMVAD_STAGE1_JSONL:-data/streamvad_weak_supervision/streamvad_stage1_train.jsonl}" \
   --streamvad_dataset True \
   --soccer_dataset_train_cls False \
   --output_dir "${OUTPUT_DIR:-output/streamvad_stage1_lora_smoke}" \
-  --deepspeed "${DEEPSPEED_CONFIG:-configs/deepspeed_zero2.json}" \
+  ${DEEPSPEED_CONFIG:+--deepspeed "${DEEPSPEED_CONFIG}"} \
   --version v1_mistral \
   --model_name_or_path "${MODEL_PATH:?set MODEL_PATH to the server VideoLLaMA2 checkpoint path}" \
   --vision_tower "${VISION_TOWER:?set VISION_TOWER to the server CLIP vision tower path}" \
