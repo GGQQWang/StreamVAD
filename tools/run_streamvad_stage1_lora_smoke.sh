@@ -13,7 +13,7 @@ GRADIENT_ACCUMULATION_STEPS="${GRADIENT_ACCUMULATION_STEPS:-1}"
 LOCAL_BATCH_SIZE="${LOCAL_BATCH_SIZE:-1}"
 MAX_SAMPLES="${MAX_SAMPLES:-16}"
 
-torchrun \
+python -m torch.distributed.run \
   --nnodes 1 \
   --nproc_per_node 1 \
   --master_addr 127.0.0.1 \
