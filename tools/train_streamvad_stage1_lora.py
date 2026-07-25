@@ -57,6 +57,8 @@ def main() -> None:
     _patch_streamvad_temporal_aggregator()
     _patch_streamvad_event_token_selection()
 
+    if custom_args.freeze_vision_tower:
+        _patch_freeze_vision_tower()
     if custom_args.streamvad_max_samples is not None:
         _patch_streamvad_max_samples(custom_args.streamvad_max_samples)
 
@@ -84,7 +86,38 @@ def _parse_custom_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
         default=None,
         help="Cap number of samples for smoke/overfit runs (applied after dataset init).",
     )
+    parser.add_argument(
+        "--freeze-vision-tower",
+        action="store_true",
+        help="Freeze CLIP vision encoder weights (train only EPFE + LoRA LLM).",
+    )
     return parser.parse_known_args(argv)
+
+
+# ---------------------------------------------------------------------------
+# Freeze CLIP vision tower
+# ---------------------------------------------------------------------------
+
+
+def _patch_freeze_vision_tower() -> None:
+    from streammind.model.videollama2_arch import Videollama2MetaModel
+
+    if getattr(Videollama2MetaModel, "_streamvad_freeze_vt_patch", False):
+        return
+
+    original = Videollama2MetaModel.initialize_vision_modules
+
+    def patched_init(self: Any, model_args: Any, fsdp: Any = None) -> None:
+        original(self, model_args, fsdp=fsdp)
+        vt = self.get_vision_tower()
+        for p in vt.parameters():
+            p.requires_grad = False
+        vt_frozen = sum(p.numel() for p in vt.parameters() if not p.requires_grad)
+        vt_total = sum(p.numel() for p in vt.parameters())
+        print(f"Vision tower frozen: {vt_frozen}/{vt_total} params")
+
+    Videollama2MetaModel.initialize_vision_modules = patched_init
+    Videollama2MetaModel._streamvad_freeze_vt_patch = True
 
 
 # ---------------------------------------------------------------------------
