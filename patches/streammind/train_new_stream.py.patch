@@ -1,0 +1,13 @@
+diff --git a/streammind/train_new_stream.py b/streammind/train_new_stream.py
+index 790988f..0a926c7 100644
+--- a/streammind/train_new_stream.py
++++ b/streammind/train_new_stream.py
+@@ -584,6 +584,8 @@ class DataCollatorForstreamDataset(object):
+         batch["past_review_caption"] = instance["past_review_caption"]
+         batch["data_type"] = instance["data_type"]
+         batch["model_type"] = instance["model_type"]
++        if "event_token_indices" in instance:
++            batch["event_token_indices"] = instance["event_token_indices"]
+         return batch
+ 
+ 

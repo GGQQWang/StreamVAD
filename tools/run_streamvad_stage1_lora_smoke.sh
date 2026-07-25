@@ -23,12 +23,13 @@ torchrun \
   --streammind-root "${STREAMMIND_ROOT:-${STREAMVAD_ROOT:-${REPO_ROOT}}/StreamMind}" \
   --streamvad-max-samples "${MAX_SAMPLES}" \
   --data_path "${STREAMVAD_STAGE1_JSONL:-data/streamvad_weak_supervision/streamvad_stage1_train.jsonl}" \
+  --streamvad_dataset True \
+  --soccer_dataset_train_cls False \
   --output_dir "${OUTPUT_DIR:-output/streamvad_stage1_lora_smoke}" \
   --deepspeed "${DEEPSPEED_CONFIG:-configs/deepspeed_zero2.json}" \
   --version v1_mistral \
   --model_name_or_path "${MODEL_PATH:?set MODEL_PATH to the server VideoLLaMA2 checkpoint path}" \
   --vision_tower "${VISION_TOWER:?set VISION_TOWER to the server CLIP vision tower path}" \
-  --freeze_backbone True \
   --lora_enable True \
   --lora_r "${LORA_R:-16}" \
   --lora_alpha "${LORA_ALPHA:-32}" \

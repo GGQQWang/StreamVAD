@@ -1,0 +1,86 @@
+diff --git a/data/datasets.py b/data/datasets.py
+index ba1d769..8f8a406 100755
+--- a/data/datasets.py
++++ b/data/datasets.py
+@@ -36,6 +36,7 @@ import re
+ 
+ import math
+ from data.soccer_data import extract_video_half,trans_video_2_json,find_video_files,preprocess_llama_2_soccer,preprocess_llama_2_soccer_cls
++from data.streamvad_data import read_streamvad_jsonl, validate_streamvad_row, preprocess_llama_2_streamvad, compute_event_token_indices
+ from data.ego4d_data import find_mp4_files,get_annos,preprocess_llama_2_ego4d,ego_video_name_2_video_path,preprocess_llama_2_ego4d_cls
+ from data.live_data import preprocess_llama_2_live,preprocess_llama_2_live_cls
+ from data.offline_data import preprocess_multimodal,preprocess_llama_2
+@@ -62,6 +63,7 @@ class DataArguments:
+     live_dataset:bool = False
+     ego4d_lta_dataset:bool = False
+     soccer_dataset_train_llm: bool = False
++    streamvad_dataset: bool = False
+ 
+ import tqdm
+ class LazySupervisedDataset(Dataset):
+@@ -82,8 +84,15 @@ class LazySupervisedDataset(Dataset):
+         self.live_dataset = self.data_args.live_dataset
+         self.ego4d_lta_dataset = self.data_args.ego4d_lta_dataset
+         self.offline_dataset = self.data_args.offline_dataset
++        self.streamvad_dataset = self.data_args.streamvad_dataset
+         self.cur_fps = self.data_args.cur_fps
+         self.data_type = self.data_args.data_type
++        if self.streamvad_dataset:
++            print("*****************getting_streamvad_stage1_data******************")
++            self.streamvad_rows = read_streamvad_jsonl(data_path)
++            for row in self.streamvad_rows:
++                validate_streamvad_row(row)
++            print(f"streamvad_stage1_samples: {len(self.streamvad_rows)}")
+         if self.soccer_dataset:
+             print("*****************getting_finetune_soccer_data******************")
+             target_filenames = ["1_224p.mkv", "2_224p.mkv"]
+@@ -661,6 +670,8 @@ class LazySupervisedDataset(Dataset):
+ 
+ 
+     def __len__(self):
++        if self.streamvad_dataset:
++            return len(self.streamvad_rows)
+         if self.soccer_dataset:
+             return len(self.soccer_video_list)
+         if self.ego4d_dataset:
+@@ -743,7 +754,39 @@ class LazySupervisedDataset(Dataset):
+     def __getitem__(self, i) -> Dict[str, torch.Tensor]:
+         num_retries = 50
+         video_processor = self.data_args.video_processor
+-        
++
++        if self.streamvad_dataset:
++            row = self.streamvad_rows[i]
++            video = self.process_soccer_video(
++                video_path=row["video"],
++                start_timestamp=row["clip_start"],
++                end_timestamp=row["clip_end"],
++                processor=video_processor,
++                cur_fps=self.cur_fps,
++            )
++            if video is None:
++                i = random.randint(0, len(self.streamvad_rows) - 1)
++                return self.__getitem__(i)
++
++            data_dict = preprocess_llama_2_streamvad(
++                target_text=row["target_text"],
++                video_path=row["video"],
++                timestamp=[float(row["clip_end"])],
++                tokenizer=self.tokenizer,
++                data_type=self.data_type,
++            )
++            data_dict["video"] = [video]
++            data_dict["video_path"] = row["video"]
++            data_dict["event_token_indices"] = compute_event_token_indices(
++                clip_start=float(row["clip_start"]),
++                clip_end=float(row["clip_end"]),
++                event_start=float(row["event_start_sec"]),
++                event_end=float(row["event_end_sec"]),
++                num_frames=video.shape[0],
++                fractions=list(row["event_token_fractions"]),
++            )
++            return data_dict
++
+         if self.soccer_dataset:
+             cur_video_id = i
+             video_path = self.soccer_video_list[cur_video_id]

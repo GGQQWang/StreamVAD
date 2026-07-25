@@ -1,0 +1,58 @@
+# StreamVAD Stage 1: anomaly-event semantic alignment
+#
+# Usage:
+#   torchrun --nproc_per_node=1 tools/train_streamvad_stage1_lora.py \
+#       --streammind-root StreamMind \
+#       --flash-attn \
+#       --config configs/stream_vad/stage1.yaml
+#
+# Or pass all arguments directly on the command line.
+
+# ── Model ──
+model_name_or_path: ""          # e.g. mistralai/Mistral-7B-Instruct-v0.2
+vision_tower: ""                # e.g. openai/clip-vit-large-patch14-336
+mm_projector_type: mamba        # EPFE: mamba | linear | stc_connector
+version: v1_mistral             # conversation template
+
+# ── Stage 1 trainability ──
+freeze_backbone: false
+tune_mm_mlp_adapter: false
+soccer_dataset_train_cls: false   # must be false for StreamVAD
+
+# ── LoRA ──
+lora_enable: true
+lora_r: 64
+lora_alpha: 16
+lora_dropout: 0.05
+
+# ── Data ──
+data_path: ""                   # path to streamvad_stage1_train.jsonl
+data_type: train
+streamvad_dataset: true
+num_frames: 32
+cur_fps: 2
+is_multimodal: true
+image_aspect_ratio: square
+
+# ── Training ──
+output_dir: ""                  # checkpoint output directory
+num_train_epochs: 3
+per_device_train_batch_size: 1  # streaming path requires batch size 1
+gradient_accumulation_steps: 8
+learning_rate: 2.0e-5
+lr_scheduler_type: cosine
+warmup_ratio: 0.03
+weight_decay: 0.0
+bf16: true
+tf32: true
+save_strategy: steps
+save_steps: 500
+save_total_limit: 3
+logging_steps: 10
+dataloader_num_workers: 4
+gradient_checkpointing: true
+model_max_length: 2048
+seed: 42
+
+# ── DeepSpeed (optional) ──
+# deepspeed: configs/deepspeed_zero2.json
