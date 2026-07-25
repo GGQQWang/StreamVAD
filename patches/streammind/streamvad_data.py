@@ -82,6 +82,21 @@ def validate_streamvad_row(row: dict[str, Any]) -> None:
         raise ValueError(f"target_text empty at {location}")
 
 
+STAGE1_HUMAN_PROMPT = (
+    "<video>\n"
+    "You are an anomaly understanding assistant.\n\n"
+    "Given the streaming perception tokens extracted from a video event,\n"
+    "analyze the observed behavior.\n\n"
+    "Please provide:\n"
+    "1. What is happening in the scene.\n"
+    "2. What behavior patterns are observed.\n"
+    "3. Whether the observed behavior deviates from normal patterns and why.\n"
+    "4. The final anomaly decision token.\n\n"
+    "If no abnormal behavior is observed, clearly state that the behavior is normal.\n"
+    "Do not hallucinate or invent anomalies without sufficient visual evidence."
+)
+
+
 def preprocess_llama_2_streamvad(
     target_text: str,
     video_path: str,
@@ -99,7 +114,7 @@ def preprocess_llama_2_streamvad(
     conv = conversation_lib.default_conversation.copy()
     roles = {"human": conv.roles[0], "gpt": conv.roles[1]}
     sources = [[
-        {"from": "human", "value": "<video>\n"},
+        {"from": "human", "value": STAGE1_HUMAN_PROMPT},
         {"from": "gpt", "value": target_text},
     ]]
 
