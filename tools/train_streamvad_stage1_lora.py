@@ -53,6 +53,7 @@ def main() -> None:
 
     import streammind.train_new_stream as train_new_stream
 
+    _patch_streamvad_encoder()
     _patch_streamvad_event_token_selection()
 
     if custom_args.streamvad_max_samples is not None:
@@ -112,6 +113,65 @@ def _patch_streamvad_max_samples(max_samples: int) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _patch_streamvad_encoder() -> None:
+    """Prevent None kwargs from being passed to mm_projector.forward."""
+    from streammind.model.videollama2_arch import Videollama2MetaForCausalLM
+
+    if getattr(Videollama2MetaForCausalLM, "_streamvad_encoder_patch", False):
+        return
+
+    original = Videollama2MetaForCausalLM.encode_images_or_videos_score_cls_video_cls_autoregressive
+
+    def safe_encoder(
+        self: Any,
+        images_or_videos: Any,
+        cls_inference: bool = False,
+        cls_training: bool = False,
+        caption_info: Any = None,
+        prompt_time_input_ids: Any = None,
+        prompt_time_lable: Any = None,
+    ) -> Any:
+        from itertools import accumulate
+        import einops
+        import torch as _torch
+
+        frames_features_list = []
+        frames_features_shape = []
+        for images_or_video in images_or_videos:
+            num_frames = images_or_video.shape[0]
+            videos = images_or_video.unsqueeze(0)
+            assert len(videos.size()) == 5
+            frames = einops.rearrange(videos, "b t c h w -> (b t) c h w")
+            if frames.shape[0] > 600:
+                frames = frames[-600:]
+            frames_features = self.get_model().get_vision_tower()(frames)
+            frames_features = einops.rearrange(
+                frames_features, "(b t) n h -> b t n h", b=videos.size(0)
+            )
+            frames_features_list.append(frames_features)
+            frames_features_shape.append(frames_features.shape[1])
+
+        frames_features_shape = list(accumulate(frames_features_shape))
+        frames_features = _torch.cat(frames_features_list, dim=1)
+
+        # Only pass kwargs that are not None
+        exactor_kwargs: dict[str, Any] = dict(
+            cls_inference=cls_inference,
+            cls_training=cls_training,
+            frames_features_shape=frames_features_shape,
+        )
+        if prompt_time_input_ids is not None:
+            exactor_kwargs["prompt_time_input_ids"] = prompt_time_input_ids
+        if prompt_time_lable is not None:
+            exactor_kwargs["prompt_time_lable"] = prompt_time_lable
+
+        exactor_output = self.temporal_aggregator(frames_features, **exactor_kwargs)
+        return exactor_output, frames_features_shape
+
+    Videollama2MetaForCausalLM.encode_images_or_videos_score_cls_video_cls_autoregressive = safe_encoder
+    Videollama2MetaForCausalLM._streamvad_encoder_patch = True
+
+
 def _patch_streamvad_event_token_selection() -> None:
     import torch
     from streammind.constants import IGNORE_INDEX, MMODAL_TOKEN_INDEX
@@ -159,8 +219,6 @@ def _patch_streamvad_event_token_selection() -> None:
                 Xs,
                 cls_training=False,
                 cls_inference=False,
-                prompt_time_input_ids=input_ids,
-                prompt_time_lable=labels,
             )
         )
         start_feature_idx = [0] + feature_idx[:-1]
