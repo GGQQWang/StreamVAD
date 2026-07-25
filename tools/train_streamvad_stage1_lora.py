@@ -54,6 +54,7 @@ def main() -> None:
     import streammind.train_new_stream as train_new_stream
 
     _patch_streamvad_encoder()
+    _patch_streamvad_temporal_aggregator()
     _patch_streamvad_event_token_selection()
 
     if custom_args.streamvad_max_samples is not None:
@@ -111,6 +112,51 @@ def _patch_streamvad_max_samples(max_samples: int) -> None:
 # ---------------------------------------------------------------------------
 # 3-token event insertion patch
 # ---------------------------------------------------------------------------
+
+
+def _patch_streamvad_temporal_aggregator() -> None:
+    """Prevent None kwargs from reaching mm_projector.forward via temporal_aggregator."""
+    from streammind.model.videollama2_arch import Videollama2MetaForCausalLM
+
+    if getattr(Videollama2MetaForCausalLM, "_streamvad_temporal_patch", False):
+        return
+
+    original = Videollama2MetaForCausalLM.temporal_aggregator
+
+    def safe_temporal_aggregator(
+        self: Any,
+        frames_features: Any,
+        cls_demo: bool = False,
+        cls_inference: bool = False,
+        cls_training: bool = False,
+        caption_info: Any = None,
+        frames_features_shape: Any = None,
+        tokenizer: Any = None,
+        prompt_time_input_ids: Any = None,
+        prompt_time_lable: Any = None,
+    ) -> Any:
+        # Build projector kwargs, skipping None values
+        proj_kw: dict[str, Any] = {}
+        if cls_inference:
+            proj_kw["cls_inference"] = cls_inference
+        if cls_training:
+            proj_kw["cls_training"] = cls_training
+        if cls_demo:
+            proj_kw["cls_demo"] = cls_demo
+        if frames_features_shape is not None:
+            proj_kw["frames_features_shape"] = frames_features_shape
+        if prompt_time_input_ids is not None:
+            proj_kw["prompt_time_input_ids"] = prompt_time_input_ids
+        if prompt_time_lable is not None:
+            proj_kw["prompt_time_lable"] = prompt_time_lable
+
+        mm_projector = self.get_model().mm_projector
+        if proj_kw:
+            return mm_projector(frames_features, **proj_kw)
+        return mm_projector(frames_features)
+
+    Videollama2MetaForCausalLM.temporal_aggregator = safe_temporal_aggregator
+    Videollama2MetaForCausalLM._streamvad_temporal_patch = True
 
 
 def _patch_streamvad_encoder() -> None:
