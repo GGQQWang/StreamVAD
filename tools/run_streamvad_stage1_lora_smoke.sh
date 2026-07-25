@@ -54,4 +54,5 @@ python tools/train_streamvad_stage1_lora.py \
   --gradient_checkpointing True \
   --dataloader_num_workers 0 \
   --report_to "${REPORT_TO:-none}" \
-  --run_name streamvad_stage1_lora_smoke
+  --run_name streamvad_stage1_lora_smoke \
+  "$@"
