@@ -1,0 +1,18 @@
+diff --git a/streammind/streammind_trainer_score.py b/streammind/streammind_trainer_score.py
+index b7c6f35..0de0980 100644
+--- a/streammind/streammind_trainer_score.py
++++ b/streammind/streammind_trainer_score.py
+@@ -103,8 +103,11 @@ from concurrent.futures import ThreadPoolExecutor
+ import os
+ import time
+ def maybe_zero_3(param, ignore_status=False, name=None):
+-    from deepspeed import zero
+-    from deepspeed.runtime.zero.partition_parameters import ZeroParamStatus
++    try:
++        from deepspeed import zero
++        from deepspeed.runtime.zero.partition_parameters import ZeroParamStatus
++    except ImportError:
++        return param.detach().cpu().clone()
+     if hasattr(param, "ds_id"):
+         if param.ds_status == ZeroParamStatus.NOT_AVAILABLE:
+             if not ignore_status:
