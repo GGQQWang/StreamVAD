@@ -301,19 +301,32 @@ def _patch_streamvad_encoder() -> None:
         import einops
         import torch as _torch
 
+        VT_CHUNK = 8  # max frames per CLIP forward to stay within memory
+
         frames_features_list = []
         frames_features_shape = []
         for images_or_video in images_or_videos:
             num_frames = images_or_video.shape[0]
-            videos = images_or_video.unsqueeze(0)
-            assert len(videos.size()) == 5
-            frames = einops.rearrange(videos, "b t c h w -> (b t) c h w")
-            if frames.shape[0] > 600:
-                frames = frames[-600:]
-            frames_features = self.get_model().get_vision_tower()(frames)
-            frames_features = einops.rearrange(
-                frames_features, "(b t) n h -> b t n h", b=videos.size(0)
-            )
+            if num_frames <= VT_CHUNK:
+                videos = images_or_video.unsqueeze(0)
+                assert len(videos.size()) == 5
+                frames = einops.rearrange(videos, "b t c h w -> (b t) c h w")
+                if frames.shape[0] > 600:
+                    frames = frames[-600:]
+                frames_features = self.get_model().get_vision_tower()(frames)
+                frames_features = einops.rearrange(
+                    frames_features, "(b t) n h -> b t n h", b=videos.size(0)
+                )
+            else:
+                chunks = images_or_video.split(VT_CHUNK)
+                chunk_features = []
+                for chunk in chunks:
+                    c = chunk.unsqueeze(0)
+                    c = einops.rearrange(c, "b t c h w -> (b t) c h w")
+                    cf = self.get_model().get_vision_tower()(c)
+                    cf = einops.rearrange(cf, "(b t) n h -> b t n h", b=1)
+                    chunk_features.append(cf)
+                frames_features = _torch.cat(chunk_features, dim=1)
             frames_features_list.append(frames_features)
             frames_features_shape.append(frames_features.shape[1])
 
