@@ -56,12 +56,9 @@ def main() -> None:
     _patch_streamvad_encoder()
     _patch_streamvad_temporal_aggregator()
     _patch_streamvad_event_token_selection()
-    _patch_strip_cls_net()
-    _patch_device_map_for_bitsandbytes()
     _patch_trainer_memory_check()
 
-    if custom_args.freeze_vision_tower:
-        _patch_freeze_vision_tower()
+    _patch_freeze_vision_tower()  # always: delete old projector, create mamba, strip cls_net, freeze VT
     if custom_args.streamvad_max_samples is not None:
         _patch_streamvad_max_samples(custom_args.streamvad_max_samples)
 
@@ -89,11 +86,6 @@ def _parse_custom_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
         default=None,
         help="Cap number of samples for smoke/overfit runs (applied after dataset init).",
     )
-    parser.add_argument(
-        "--freeze-vision-tower",
-        action="store_true",
-        help="Freeze CLIP vision encoder weights (train only EPFE + LoRA LLM).",
-    )
     return parser.parse_known_args(argv)
 
 
@@ -105,56 +97,49 @@ def _parse_custom_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
 def _patch_freeze_vision_tower() -> None:
     from streammind.model.videollama2_arch import Videollama2MetaModel
 
-    if getattr(Videollama2MetaModel, "_streamvad_freeze_vt_patch", False):
+    if getattr(Videollama2MetaModel, "_streamvad_mega_patch", False):
         return
 
     original = Videollama2MetaModel.initialize_vision_modules
 
-    def patched_init(self: Any, model_args: Any, fsdp: Any = None) -> None:
+    def mega_init(self: Any, model_args: Any, fsdp: Any = None) -> None:
+        # ── 1. Delete OLD mm_projector (from checkpoint) to free GPU memory ──
+        import torch, gc
+        if hasattr(self, "mm_projector") and self.mm_projector is not None:
+            old_type = type(self.mm_projector).__name__
+            old_params = sum(p.numel() for p in self.mm_projector.parameters())
+            self.mm_projector.to("cpu")
+            del self.mm_projector
+            gc.collect()
+            torch.cuda.empty_cache()
+            print(f"[StreamVAD] deleted old projector: {old_type} ({old_params/1e6:.0f}M params)")
+
+        # ── 2. Create new projector (mamba) ──
         original(self, model_args, fsdp=fsdp)
-        vt = self.get_vision_tower()
-        for p in vt.parameters():
-            p.requires_grad = False
-        vt_frozen = sum(p.numel() for p in vt.parameters() if not p.requires_grad)
-        vt_total = sum(p.numel() for p in vt.parameters())
-        print(f"Vision tower frozen: {vt_frozen}/{vt_total} params")
+        new_type = type(self.mm_projector).__name__
+        new_params = sum(p.numel() for p in self.mm_projector.parameters())
+        print(f"[StreamVAD] new projector: {new_type} ({new_params/1e6:.0f}M params)")
 
-    Videollama2MetaModel.initialize_vision_modules = patched_init
-    Videollama2MetaModel._streamvad_freeze_vt_patch = True
-
-
-# ---------------------------------------------------------------------------
-# Strip ClsNet to save GPU memory (not needed for Stage 1)
-# ---------------------------------------------------------------------------
-
-
-def _patch_strip_cls_net() -> None:
-    """Remove cls_net from mm_projector after model init to free ~2GB GPU memory.
-
-    ClsNet is the legacy 4-layer mini-Mistral used for silence/response gate
-    prediction.  Stage 1 trains EPFE + LLM semantic alignment and does not
-    invoke the gate.  Stage 2 will use a separate lightweight cognition gate.
-    """
-    from streammind.model.videollama2_arch import Videollama2MetaModel
-
-    if getattr(Videollama2MetaModel, "_streamvad_strip_cls_patch", False):
-        return
-
-    original = Videollama2MetaModel.initialize_vision_modules
-
-    def patched_init(self: Any, model_args: Any, fsdp: Any = None) -> None:
-        original(self, model_args, fsdp=fsdp)
+        # ── 3. Strip cls_net (legacy gate, not needed for Stage 1) ──
         proj = self.mm_projector
         if hasattr(proj, "cls_net") and proj.cls_net is not None:
             n = sum(p.numel() for p in proj.cls_net.parameters())
             proj.cls_net = None
-            import torch
-
             torch.cuda.empty_cache()
-            print(f"[StreamVAD] removed cls_net from projector ({n / 1e6:.0f}M params freed)")
+            print(f"[StreamVAD] removed cls_net ({n/1e6:.0f}M params)")
 
-    Videollama2MetaModel.initialize_vision_modules = patched_init
-    Videollama2MetaModel._streamvad_strip_cls_patch = True
+        # ── 4. Freeze vision tower ──
+        vt = self.get_vision_tower()
+        for p in vt.parameters():
+            p.requires_grad = False
+        print(f"[StreamVAD] vision tower frozen")
+
+        # ── 5. Report ──
+        alloc = torch.cuda.memory_allocated() / 1e9
+        print(f"[StreamVAD] after init: alloc={alloc:.1f}GB")
+
+    Videollama2MetaModel.initialize_vision_modules = mega_init
+    Videollama2MetaModel._streamvad_mega_patch = True
 
 
 # ---------------------------------------------------------------------------
