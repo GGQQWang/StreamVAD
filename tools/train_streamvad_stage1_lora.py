@@ -56,6 +56,7 @@ def main() -> None:
     _patch_streamvad_encoder()
     _patch_streamvad_temporal_aggregator()
     _patch_streamvad_event_token_selection()
+    _patch_strip_cls_net()
 
     if custom_args.freeze_vision_tower:
         _patch_freeze_vision_tower()
@@ -118,6 +119,40 @@ def _patch_freeze_vision_tower() -> None:
 
     Videollama2MetaModel.initialize_vision_modules = patched_init
     Videollama2MetaModel._streamvad_freeze_vt_patch = True
+
+
+# ---------------------------------------------------------------------------
+# Strip ClsNet to save GPU memory (not needed for Stage 1)
+# ---------------------------------------------------------------------------
+
+
+def _patch_strip_cls_net() -> None:
+    """Remove cls_net from mm_projector after model init to free ~2GB GPU memory.
+
+    ClsNet is the legacy 4-layer mini-Mistral used for silence/response gate
+    prediction.  Stage 1 trains EPFE + LLM semantic alignment and does not
+    invoke the gate.  Stage 2 will use a separate lightweight cognition gate.
+    """
+    from streammind.model.videollama2_arch import Videollama2MetaModel
+
+    if getattr(Videollama2MetaModel, "_streamvad_strip_cls_patch", False):
+        return
+
+    original = Videollama2MetaModel.initialize_vision_modules
+
+    def patched_init(self: Any, model_args: Any, fsdp: Any = None) -> None:
+        original(self, model_args, fsdp=fsdp)
+        proj = self.mm_projector
+        if hasattr(proj, "cls_net") and proj.cls_net is not None:
+            n = sum(p.numel() for p in proj.cls_net.parameters())
+            proj.cls_net = None
+            import torch
+
+            torch.cuda.empty_cache()
+            print(f"[StreamVAD] removed cls_net from projector ({n / 1e6:.0f}M params freed)")
+
+    Videollama2MetaModel.initialize_vision_modules = patched_init
+    Videollama2MetaModel._streamvad_strip_cls_patch = True
 
 
 # ---------------------------------------------------------------------------
