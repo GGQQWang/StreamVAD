@@ -255,7 +255,17 @@ def boundary_info(row: dict[str, Any], fps: float, duration_sec: float | None) -
     return info
 
 
-def make_target_text(observation: str, reason: str) -> str:
+def make_target_text(observation: str, reason: str, label: str = "abnormal") -> str:
+    if label == "normal":
+        return (
+            "<think>\n"
+            f"The clip shows {observation}\n"
+            "The behavior appears consistent with normal activity patterns.\n"
+            "</think>\n"
+            "<answer>\n"
+            "Normal\n"
+            "</answer>"
+        )
     reason_text = reason[:1].lower() + reason[1:] if reason else "the visible behavior departs from normal activity."
     return (
         "<think>\n"
@@ -270,8 +280,6 @@ def make_target_text(observation: str, reason: str) -> str:
 
 def make_stage1(row: dict[str, Any], args: argparse.Namespace) -> dict[str, Any] | None:
     label = infer_label(row)
-    if label != "abnormal":
-        return None
     timing = get_video_timing(row, args)
     duration = timing["duration_sec"]
     scene_prior, observation, reason, needs_review = extract_compact_supervision(row)
@@ -280,10 +288,17 @@ def make_stage1(row: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]
     if label == "abnormal" and boundary["valid"] and duration is not None:
         clip_start = clamp(boundary["start_sec"] - args.pre_context_sec, 0.0, duration)
         clip_end = clamp(boundary["end_sec"] + args.post_context_sec, 0.0, duration)
+        event_start = boundary["start_sec"]
+        event_end = boundary["end_sec"]
+    elif label == "normal" and duration is not None and duration > 0:
+        clip_end = min(args.normal_clip_sec, duration)
+        clip_start = max(0.0, clip_end - args.normal_clip_sec)
+        event_start = clip_start
+        event_end = clip_end
     else:
         return None
 
-    if clip_end is None:
+    if clip_end is None or clip_end <= clip_start:
         return None
 
     return {
@@ -295,15 +310,15 @@ def make_stage1(row: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]
         "original_video": original_video_path(row),
         "clip_start": round(clip_start, 6) if clip_start is not None else None,
         "clip_end": round(clip_end, 6) if clip_end is not None else None,
-        "event_start_sec": round(boundary["start_sec"], 6),
-        "event_end_sec": round(boundary["end_sec"], 6),
+        "event_start_sec": round(event_start, 6),
+        "event_end_sec": round(event_end, 6),
         "event_token_fractions": [0.1, 0.5, 0.9],
         "event_token_policy": "ordered_start_middle_end",
         "scene_prior": scene_prior,
         "observation": observation,
         "reason": reason,
-        "answer": "abnormal",
-        "target_text": make_target_text(observation, reason),
+        "answer": label,
+        "target_text": make_target_text(observation, reason, label),
         "original_think": row.get("think"),
         "original_answer": row.get("answer"),
         "original_start": boundary["original_start"],
@@ -613,6 +628,7 @@ def main() -> None:
     parser.add_argument("--post-context-sec", type=float, default=2.0)
     parser.add_argument("--chunk-duration-sec", type=float, default=1.0)
     parser.add_argument("--boundary-radius-sec", type=float, default=1.0)
+    parser.add_argument("--normal-clip-sec", type=float, default=10.0, help="Clip length for normal videos (seconds).")
     parser.add_argument("--train-ratio", type=float, default=0.9)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--fps", type=float, default=30.0, help="Fallback fps when video probing is unavailable.")
