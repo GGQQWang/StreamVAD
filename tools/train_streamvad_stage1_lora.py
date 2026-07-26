@@ -58,6 +58,7 @@ def main() -> None:
     _patch_streamvad_event_token_selection()
     _patch_strip_cls_net()
     _patch_device_map_for_bitsandbytes()
+    _patch_trainer_memory_check()
 
     if custom_args.freeze_vision_tower:
         _patch_freeze_vision_tower()
@@ -187,6 +188,38 @@ def _patch_device_map_for_bitsandbytes() -> None:
 
     Videollama2MistralForCausalLM.from_pretrained = patched_from_pretrained
     Videollama2MistralForCausalLM._streamvad_device_map_patch = True
+
+
+# ---------------------------------------------------------------------------
+# Memory diagnostic hook before training loop
+# ---------------------------------------------------------------------------
+
+
+def _patch_trainer_memory_check() -> None:
+    """Log GPU memory right before the training loop starts."""
+    from streammind.streammind_trainer_score import StreamMindTrainer
+
+    if getattr(StreamMindTrainer, "_streamvad_mem_check_patch", False):
+        return
+
+    original = StreamMindTrainer.train
+
+    def train_with_mem(self: Any, *args: Any, **kwargs: Any) -> Any:
+        import gc
+        import torch
+        gc.collect()
+        torch.cuda.empty_cache()
+        alloc = torch.cuda.memory_allocated() / 1e9
+        reserve = torch.cuda.memory_reserved() / 1e9
+        max_alloc = torch.cuda.max_memory_allocated() / 1e9
+        print(
+            f"[MEMCHECK] before training: "
+            f"alloc={alloc:.1f}GB reserve={reserve:.1f}GB peak={max_alloc:.1f}GB"
+        )
+        return original(self, *args, **kwargs)
+
+    StreamMindTrainer.train = train_with_mem
+    StreamMindTrainer._streamvad_mem_check_patch = True
 
 
 # ---------------------------------------------------------------------------
