@@ -57,6 +57,7 @@ def main() -> None:
     _patch_streamvad_temporal_aggregator()
     _patch_streamvad_event_token_selection()
     _patch_strip_cls_net()
+    _patch_device_map_for_bitsandbytes()
 
     if custom_args.freeze_vision_tower:
         _patch_freeze_vision_tower()
@@ -153,6 +154,39 @@ def _patch_strip_cls_net() -> None:
 
     Videollama2MetaModel.initialize_vision_modules = patched_init
     Videollama2MetaModel._streamvad_strip_cls_patch = True
+
+
+# ---------------------------------------------------------------------------
+# Add device_map when using BitsAndBytes to prevent duplicate GPU allocation
+# ---------------------------------------------------------------------------
+
+
+def _patch_device_map_for_bitsandbytes() -> None:
+    """Patch from_pretrained to inject ``device_map={'': 0}`` when a
+    BitsAndBytes quantization_config is present but no device_map is given.
+
+    Without device_map, HuggingFace may load quantized weights on CPU and
+    then duplicate them on GPU, wasting memory.
+    """
+    from streammind.model.language_model.videollama2_mistral import Videollama2MistralForCausalLM
+
+    if getattr(Videollama2MistralForCausalLM, "_streamvad_device_map_patch", False):
+        return
+
+    original = Videollama2MistralForCausalLM.from_pretrained
+
+    @classmethod  # type: ignore[misc]
+    def patched_from_pretrained(cls: Any, *args: Any, **kwargs: Any) -> Any:
+        if (
+            "quantization_config" in kwargs
+            and "device_map" not in kwargs
+            and not any(isinstance(a, dict) and "device_map" in a for a in args)
+        ):
+            kwargs["device_map"] = {"": 0}
+        return original(*args, **kwargs)
+
+    Videollama2MistralForCausalLM.from_pretrained = patched_from_pretrained
+    Videollama2MistralForCausalLM._streamvad_device_map_patch = True
 
 
 # ---------------------------------------------------------------------------
