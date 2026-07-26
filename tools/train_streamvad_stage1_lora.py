@@ -59,6 +59,8 @@ def main() -> None:
     _patch_trainer_memory_check()
 
     _patch_freeze_vision_tower()  # always: delete old projector, create mamba, strip cls_net, freeze VT
+    if custom_args.streamvad_eval_jsonl is not None:
+        _patch_streamvad_eval(custom_args.streamvad_eval_jsonl)
     if custom_args.streamvad_max_samples is not None:
         _patch_streamvad_max_samples(custom_args.streamvad_max_samples)
 
@@ -85,6 +87,12 @@ def _parse_custom_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
         type=int,
         default=None,
         help="Cap number of samples for smoke/overfit runs (applied after dataset init).",
+    )
+    parser.add_argument(
+        "--streamvad-eval-jsonl",
+        type=Path,
+        default=None,
+        help="Optional validation JSONL for per-epoch eval loss.",
     )
     return parser.parse_known_args(argv)
 
@@ -205,6 +213,45 @@ def _patch_trainer_memory_check() -> None:
 
     StreamMindTrainer.train = train_with_mem
     StreamMindTrainer._streamvad_mem_check_patch = True
+
+
+# ---------------------------------------------------------------------------
+# Eval dataset support
+# ---------------------------------------------------------------------------
+
+
+def _patch_streamvad_eval(eval_jsonl: Any) -> None:
+    """Inject a StreamVAD eval dataset so per-epoch validation works."""
+    import streammind.train_new_stream as tns
+
+    if getattr(tns, "_streamvad_eval_patch", False):
+        return
+
+    original = tns.make_supervised_stream_data_module
+
+    def make_with_eval(tokenizer: Any, data_args: Any) -> dict[str, Any]:
+        result = original(tokenizer, data_args)
+        from data.datasets import LazySupervisedDataset
+
+        eval_args = type(data_args)()
+        for attr in dir(data_args):
+            if not attr.startswith("_"):
+                try:
+                    setattr(eval_args, attr, getattr(data_args, attr))
+                except AttributeError:
+                    pass
+        eval_args.data_path = str(eval_jsonl)
+        eval_args.streamvad_dataset = True
+        eval_dataset = LazySupervisedDataset(
+            tokenizer=tokenizer, data_path=str(eval_jsonl), data_args=eval_args
+        )
+        result["eval_dataset"] = eval_dataset
+        result["data_collator"] = tns.DataCollatorForstreamDataset(tokenizer=tokenizer)
+        print(f"[StreamVAD] eval dataset: {len(eval_dataset)} samples")
+        return result
+
+    tns.make_supervised_stream_data_module = make_with_eval
+    tns._streamvad_eval_patch = True
 
 
 # ---------------------------------------------------------------------------
