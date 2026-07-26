@@ -402,6 +402,9 @@ def _patch_streamvad_event_token_selection() -> None:
                 cls_inference=False,
             )
         )
+        if labels is not None:
+            torch.cuda.synchronize()
+            print(f"[MEM] after encoder: alloc={torch.cuda.memory_allocated()/1e9:.1f}GB peak={torch.cuda.max_memory_allocated()/1e9:.1f}GB")
         start_feature_idx = [0] + feature_idx[:-1]
         normalized_event_indices = _normalize_event_indices(event_token_indices)
 
