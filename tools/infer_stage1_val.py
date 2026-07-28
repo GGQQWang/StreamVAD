@@ -101,10 +101,10 @@ def load_model(checkpoint_dir: Path, streammind_root: Path) -> Any:
     for p in vt.parameters():
         p.requires_grad = False
 
-    # Load LoRA adapter
+    # Move base model to GPU before loading LoRA/Peft
+    model.to(device=0, dtype=torch.bfloat16)
     model = PeftModel.from_pretrained(model, str(checkpoint_dir))
     model = model.merge_and_unload()
-    model.to(device=0, dtype=torch.bfloat16)
     model.eval()
 
     tokenizer = AutoTokenizer.from_pretrained(str(checkpoint_dir), use_fast=True)
