@@ -247,6 +247,16 @@ def decord_load_video(video_path: str, start_sec: float, end_sec: float, num_fra
     return pixel_values
 
 
+def build_generation_prompt(user_prompt: str) -> str:
+    from streammind import conversation as conversation_lib
+
+    conv = conversation_lib.default_conversation.copy()
+    conv.messages = []
+    conv.append_message(conv.roles[0], user_prompt)
+    conv.append_message(conv.roles[1], None)
+    return conv.get_prompt()
+
+
 def generate_text(
     model: Any,
     tokenizer: Any,
@@ -262,7 +272,13 @@ def generate_text(
     from streammind.constants import MMODAL_TOKEN_INDEX
     from streammind.mm_utils import tokenizer_MMODAL_token
 
-    input_ids = tokenizer_MMODAL_token(prompt, tokenizer, MMODAL_TOKEN_INDEX["VIDEO"], return_tensors="pt")
+    conversation_prompt = build_generation_prompt(prompt)
+    input_ids = tokenizer_MMODAL_token(
+        conversation_prompt,
+        tokenizer,
+        MMODAL_TOKEN_INDEX["VIDEO"],
+        return_tensors="pt",
+    )
     input_ids = input_ids.unsqueeze(0).to("cuda:0")  # 1D→2D [1, seq_len]
     pixel_values = pixel_values.to(device="cuda:0", dtype=model.dtype)
 
@@ -326,13 +342,17 @@ def generate_text(
             do_sample=False,
             pad_token_id=tokenizer.pad_token_id,
         )
-    return tokenizer.decode(output_ids[0], skip_special_tokens=True)
+    if output_ids.shape[1] > inputs_embeds.shape[1]:
+        output_ids = output_ids[:, inputs_embeds.shape[1]:]
+    return tokenizer.decode(output_ids[0], skip_special_tokens=True).strip()
 
 
 def extract_decision(text: str) -> str | None:
     m = re.search(r"<answer>\s*(Normal|Abnormal)\s*</answer>", text, re.IGNORECASE)
     if m:
         return m.group(1).lower()
+    if re.search(r"</?answer\b", text, re.IGNORECASE):
+        return None
     # Fallback: last occurrence
     tail = text.lower()[-200:]
     if "abnormal" in tail:
