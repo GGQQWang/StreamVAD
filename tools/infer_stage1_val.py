@@ -25,9 +25,6 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from streamvad.data import StreamVADStage1Dataset
-
-
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--checkpoint", type=Path, required=True)
@@ -113,27 +110,49 @@ def load_model(checkpoint_dir: Path, streammind_root: Path) -> Any:
     return model, tokenizer, vt.image_processor
 
 
+def decord_load_video(video_path: str, start_sec: float, end_sec: float, num_frames: int, image_processor: Any) -> Any:
+    """Load video with decord (matching training pipeline)."""
+    import numpy as np
+    from PIL import Image
+    from decord import VideoReader, cpu
+    from streammind.mm_utils import expand2square
+
+    vr = VideoReader(video_path, ctx=cpu(0), num_threads=1)
+    video_fps = float(vr.get_avg_fps())
+    start_frame = int(max(0, start_sec * video_fps - 1))
+    end_frame = int(end_sec * video_fps + 1)
+    if end_frame <= start_frame or start_sec >= end_sec:
+        raise ValueError(f"invalid video segment: {video_path} [{start_sec},{end_sec}]")
+
+    seg_size = max(1, int(video_fps / 2))  # cur_fps=2 like training
+    frame_ids = np.arange(start_frame, min(end_frame, len(vr)), seg_size, dtype=int)
+    frames_arr = vr.get_batch(frame_ids).asnumpy()
+    if frames_arr.shape[0] == 0:
+        raise ValueError(f"no frames decoded from {video_path}")
+
+    bg = tuple(int(c * 255) for c in image_processor.image_mean[:3])
+    images = []
+    for f in frames_arr:
+        img = Image.fromarray(f)
+        img = expand2square(img, bg)
+        images.append(img)
+    if len(images) > num_frames:
+        import torch
+        indices = torch.linspace(0, len(images) - 1, steps=num_frames).round().long()
+        images = [images[i] for i in indices]
+    pixel_values = image_processor.preprocess(images, return_tensors="pt")["pixel_values"]
+    return pixel_values
+
+
 def generate_text(
     model: Any,
     tokenizer: Any,
     image_processor: Any,
-    frames: Any,
+    pixel_values: Any,
     prompt: str,
     max_new_tokens: int = 128,
 ) -> str:
     import torch
-    from PIL import Image
-
-    from streammind.mm_utils import expand2square
-
-    # Process frames
-    bg = tuple(int(c * 255) for c in image_processor.image_mean[:3])
-    images = []
-    for frame in frames:
-        img = Image.fromarray(frame.cpu().numpy().astype("uint8"))
-        img = expand2square(img, bg)
-        images.append(img)
-    pixel_values = image_processor.preprocess(images, return_tensors="pt")["pixel_values"]
 
     # Tokenize prompt
     from streammind.constants import MMODAL_TOKEN_INDEX
@@ -211,36 +230,34 @@ def main():
     model, tokenizer, image_processor = load_model(args.checkpoint, args.streammind_root)
     print("Model loaded.")
 
-    from data.streamvad_data import STAGE1_HUMAN_PROMPT
+    from data.streamvad_data import STAGE1_HUMAN_PROMPT, read_streamvad_jsonl, validate_streamvad_row
 
-    dataset = StreamVADStage1Dataset(
-        args.val_jsonl,
-        decode_video=True,
-        num_frames=args.num_frames,
-        require_video_exists=True,
-    )
-    n = min(args.max_samples or len(dataset), len(dataset))
+    rows = read_streamvad_jsonl(str(args.val_jsonl))
+    n = min(args.max_samples or len(rows), len(rows))
     print(f"Val samples: {n}")
 
     correct = 0
     total = 0
     skipped = 0
-    by_label = {"normal": [0, 0], "abnormal": [0, 0]}  # [total, correct]
+    by_label = {"normal": [0, 0], "abnormal": [0, 0]}
 
     for i in range(n):
-        sample = dataset[i]
-        gt = sample.get("answer", "")
+        row = rows[i]
+        gt = row.get("answer", "").lower()
 
         try:
+            pixel_values = decord_load_video(
+                str(row["video"]),
+                float(row["clip_start"]),
+                float(row["clip_end"]),
+                args.num_frames,
+                image_processor,
+            )
             output = generate_text(
                 model, tokenizer, image_processor,
-                frames=sample["frames"],
+                pixel_values=pixel_values,
                 prompt=STAGE1_HUMAN_PROMPT,
             )
-        except Exception as e:
-            print(f"  [{i}] ERROR: {e}")
-            skipped += 1
-            continue
 
         pred = extract_decision(output)
         total += 1
