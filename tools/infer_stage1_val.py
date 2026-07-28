@@ -75,6 +75,7 @@ def load_model(checkpoint_dir: Path, streammind_root: Path) -> Any:
         str(checkpoint_dir),
         config=cfg,
         torch_dtype=torch.bfloat16,
+        device_map={"": 0},
     )
 
     # Init vision + mamba projector
@@ -101,8 +102,6 @@ def load_model(checkpoint_dir: Path, streammind_root: Path) -> Any:
     for p in vt.parameters():
         p.requires_grad = False
 
-    # Move base model to GPU before loading LoRA/Peft
-    model.to(device=0, dtype=torch.bfloat16)
     model = PeftModel.from_pretrained(model, str(checkpoint_dir))
     model = model.merge_and_unload()
     model.eval()
