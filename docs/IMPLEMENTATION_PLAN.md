@@ -14,7 +14,7 @@ The repository is organized as a thin StreamVAD layer around two upstream code d
 Upstream commits recorded during this pass:
 
 - StreamMind: `d873dc5559d3bb9457882fe92c5898449cb4d8d4`
-- Vad-R1 vendored state in parent repository: `85fc8553c813db48dcd2fb26982b1c581714b3b5`
+- Vad-R1 vendored state in parent repository: `2c4c1a322d071fc841b578c192def5cc9aaefdf0`
 
 `Vad-R1/` is not an independent git checkout in this workspace, so the exact local state is recorded by the parent repository commit that introduced the vendored files.
 
@@ -24,7 +24,7 @@ Upstream commits recorded during this pass:
 
 Start from StreamMind Stage1 reproduction, then replace its soccer caption supervision with StreamVAD abnormal-video supervision derived from VAD-R1.
 
-Stage1 v0 is abnormal-event semantic alignment. It uses only abnormal rows with validated `[start, end]` boundaries. CLIP sees the sampled clip, EPFE/Mamba produces a perception-token sequence, and the LLM receives only three ordered event perception tokens selected from the anomaly start/middle/end phases.
+Stage1 v0 is event semantic alignment. Abnormal rows use validated `[start, end]` boundaries, while normal rows use a configured leading clip window. CLIP sees the sampled clip, EPFE/Mamba produces a perception-token sequence, and the LLM receives only three ordered event perception tokens selected from the event start/middle/end phases.
 
 The Stage1 language model target is:
 
@@ -49,7 +49,7 @@ Event token selection:
 
 1. `tools/build_streamvad_weak_supervision.py`
    - Parses VAD-R1 JSONL.
-   - Builds abnormal-only Stage1 compact CoT rows with event boundaries and `target_text`.
+   - Builds Stage1 compact CoT rows with event boundaries and `target_text`.
    - Builds Stage2 gate rows with semantic `gate_action` values: `hold`, `trigger`, `ignore`.
    - Keeps `gate_label` as a configured class id for loss code: `hold=0`, `trigger=1`, `ignore=-100`.
 
@@ -119,15 +119,24 @@ VISION_TOWER=/path/to/clip-vit-large-patch14-336 \
 scripts/server_train_streamvad_stage1.sh
 ```
 
-5. Stage2, inference, and evaluation:
+5. Stage1 inference and evaluation:
+
+```bash
+STAGE1_CHECKPOINT=/path/to/output/streamvad_stage1_lora/checkpoint-500 \
+MODEL_PATH=/path/to/VideoLLaMA2-7B \
+VISION_TOWER=/path/to/clip-vit-large-patch14-336 \
+STREAMVAD_STAGE1_VAL_JSONL=/path/to/streamvad_stage1_val.jsonl \
+scripts/server_infer_streamvad_stage1.sh
+```
+
+6. Stage2 and extended evaluation:
 
 ```bash
 scripts/server_train_streamvad_stage2_gate.sh
-scripts/server_infer_streamvad_stage1.sh
 scripts/server_eval_streamvad_stage1.sh
 ```
 
-These last three are explicit server-side placeholders until the model-runner and cls-trainer adapters are implemented.
+Stage2 training and extended evaluation are explicit server-side placeholders until the cls-trainer adapter and richer metrics are implemented.
 
 ## Expected Outputs
 
@@ -137,12 +146,13 @@ These last three are explicit server-side placeholders until the model-runner an
   - `data/streamvad_weak_supervision/streamvad_stage2_train.jsonl`
   - `data/streamvad_weak_supervision/streamvad_stage2_val.jsonl`
 
-- Stage1 training:
+- Stage1 training and inference:
   - LoRA checkpoints under `output/streamvad_stage1_lora` unless `OUTPUT_DIR` overrides it.
-  - Generated targets should use `<think>...</think><answer>Abnormal</answer>`.
+  - Generated targets should use `<think>...</think><answer>Normal|Abnormal</answer>`.
+  - Inference prints overall accuracy plus per-label normal/abnormal accuracy.
 
 ## Remaining Work
 
 - Implement a StreamVAD Stage2 cls adapter that trains hold/trigger without using tokenizer token ids.
-- Add Stage1 inference JSONL writer and CoT/answer evaluation.
+- Add Stage1 inference JSONL writer and richer CoT/answer evaluation.
 - Add Stage2 trigger metrics: precision, recall, F1, boundary latency, duplicate trigger rate.

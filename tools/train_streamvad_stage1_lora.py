@@ -549,6 +549,35 @@ def _normalize_event_indices(event_token_indices: Any) -> list[list[int]]:
     return [list(indices) for indices in event_token_indices]
 
 
+def compute_event_token_indices(
+    clip_start: float,
+    clip_end: float,
+    event_start: float,
+    event_end: float,
+    num_frames: int,
+    fractions: list[float],
+) -> list[int]:
+    """Map event time fractions to frame indices in the decoded clip."""
+    if num_frames <= 0:
+        raise ValueError("num_frames must be positive")
+    if clip_end <= clip_start:
+        raise ValueError("clip_end must be greater than clip_start")
+    if not (clip_start <= event_start < event_end <= clip_end):
+        raise ValueError("event range must be inside clip range")
+
+    clip_duration = clip_end - clip_start
+    event_duration = max(event_end - event_start, 1e-6)
+    indices: list[int] = []
+    for frac in fractions:
+        frac = float(frac)
+        if not 0.0 <= frac <= 1.0:
+            raise ValueError(f"event token fraction must be in [0, 1], got {frac}")
+        event_time = event_start + event_duration * frac
+        relative = (event_time - clip_start) / clip_duration
+        indices.append(max(0, min(num_frames - 1, round(relative * (num_frames - 1)))))
+    return indices
+
+
 def _select_event_features(
     cur_X_features: Any, event_indices: list[int], torch_module: Any
 ) -> Any:

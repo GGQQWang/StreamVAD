@@ -4,7 +4,9 @@
 Usage::
 
   python tools/infer_stage1_val.py \
-    --checkpoint /path/to/checkpoint \
+    --checkpoint /path/to/lora/checkpoint-500 \
+    --base-model /path/to/VideoLLaMA2-7B \
+    --vision-tower /path/to/clip-vit-large-patch14-336 \
     --val-jsonl /path/to/val.jsonl \
     --streammind-root StreamMind \
     --max-samples 20
@@ -28,14 +30,60 @@ if str(REPO_ROOT) not in sys.path:
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--checkpoint", type=Path, required=True)
+    p.add_argument(
+        "--base-model",
+        type=Path,
+        default=None,
+        help="Base VideoLLaMA2 checkpoint. Defaults to adapter_config.json base_model_name_or_path when available.",
+    )
+    p.add_argument(
+        "--vision-tower",
+        type=Path,
+        default=None,
+        help="CLIP vision tower path. Defaults to --base-model only for legacy merged checkpoints.",
+    )
     p.add_argument("--val-jsonl", type=Path, required=True)
     p.add_argument("--streammind-root", type=Path, default=REPO_ROOT / "StreamMind")
     p.add_argument("--max-samples", type=int, default=None)
     p.add_argument("--num-frames", type=int, default=32)
+    p.add_argument("--max-new-tokens", type=int, default=128)
+    p.add_argument(
+        "--output-jsonl",
+        type=Path,
+        default=None,
+        help="Optional path for per-sample predictions and miss/false-alarm flags.",
+    )
+    p.add_argument(
+        "--flash-attn",
+        action="store_true",
+        help="Use flash_attention_2. Leave off for environments without FlashAttention.",
+    )
+    p.add_argument(
+        "--allow-missing-video",
+        action="store_true",
+        help="Only validate JSONL schema before decode; decoding still fails for missing videos.",
+    )
     return p.parse_args()
 
 
-def load_model(checkpoint_dir: Path, streammind_root: Path) -> Any:
+def _read_adapter_base(checkpoint_dir: Path) -> str | None:
+    adapter_config = checkpoint_dir / "adapter_config.json"
+    if not adapter_config.exists():
+        return None
+    with adapter_config.open("r", encoding="utf-8") as handle:
+        data = json.load(handle)
+    base = data.get("base_model_name_or_path")
+    return str(base) if base else None
+
+
+def load_model(
+    checkpoint_dir: Path,
+    streammind_root: Path,
+    *,
+    base_model: Path | None,
+    vision_tower: Path | None,
+    flash_attn: bool,
+) -> Any:
     import torch
     from transformers import AutoConfig, AutoTokenizer
     from peft import PeftModel
@@ -64,12 +112,20 @@ def load_model(checkpoint_dir: Path, streammind_root: Path) -> Any:
 
     Videollama2MetaModel.initialize_vision_modules = mega_init
 
-    # Load base model
+    if not checkpoint_dir.exists():
+        raise FileNotFoundError(f"checkpoint not found: {checkpoint_dir}")
+    base_model_path = str(base_model) if base_model is not None else _read_adapter_base(checkpoint_dir)
+    if base_model_path is None:
+        base_model_path = str(checkpoint_dir)
+    vision_tower_path = str(vision_tower) if vision_tower is not None else base_model_path
+
+    # Load base model with the StreamVAD checkpoint config.
     cfg = AutoConfig.from_pretrained(str(checkpoint_dir), trust_remote_code=True)
-    cfg._attn_implementation = "flash_attention_2"
+    if flash_attn:
+        cfg._attn_implementation = "flash_attention_2"
 
     model = Videollama2MistralForCausalLM.from_pretrained(
-        str(checkpoint_dir),
+        base_model_path,
         config=cfg,
         torch_dtype=torch.bfloat16,
         device_map={"": 0},
@@ -81,7 +137,7 @@ def load_model(checkpoint_dir: Path, streammind_root: Path) -> Any:
             "Args",
             (),
             {
-                "vision_tower": str(checkpoint_dir),
+                "vision_tower": vision_tower_path,
                 "mm_projector_type": "mamba",
                 "mm_vision_select_layer": -2,
                 "mm_vision_select_feature": "patch",
@@ -110,11 +166,13 @@ def load_model(checkpoint_dir: Path, streammind_root: Path) -> Any:
         model.load_state_dict(nlt, strict=False)
         print("non_lora_trainables loaded.")
 
-    model = PeftModel.from_pretrained(model, str(checkpoint_dir))
-    model = model.merge_and_unload()
+    if (checkpoint_dir / "adapter_config.json").exists():
+        model = PeftModel.from_pretrained(model, str(checkpoint_dir))
+        model = model.merge_and_unload()
     model.eval()
 
-    tokenizer = AutoTokenizer.from_pretrained(str(checkpoint_dir), use_fast=True)
+    tokenizer_path = str(checkpoint_dir) if (checkpoint_dir / "tokenizer_config.json").exists() else base_model_path
+    tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, use_fast=True)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.unk_token
     # Add video modal token and update both index maps (same as training)
@@ -168,6 +226,7 @@ def generate_text(
     image_processor: Any,
     pixel_values: Any,
     prompt: str,
+    event_token_indices: list[int],
     max_new_tokens: int = 128,
 ) -> str:
     import torch
@@ -205,6 +264,14 @@ def generate_text(
             cls_inference=False,
             frames_features_shape=shape,
         )
+    if isinstance(proj_out, tuple):
+        proj_out = proj_out[0]
+    event_indices = torch.tensor(
+        [max(0, min(proj_out.shape[1] - 1, int(idx))) for idx in event_token_indices],
+        device=proj_out.device,
+        dtype=torch.long,
+    )
+    event_features = proj_out.index_select(1, event_indices)
 
     # Find <video> token position and replace with projected features
     video_idx = (input_ids == MMODAL_TOKEN_INDEX["VIDEO"]).nonzero(as_tuple=True)[1]
@@ -212,7 +279,7 @@ def generate_text(
         vpos = video_idx[0].item()
         prefix_embeds = model.get_model().embed_tokens(input_ids[:, :vpos])
         suffix_embeds = model.get_model().embed_tokens(input_ids[:, vpos + 1 :])
-        inputs_embeds = torch.cat([prefix_embeds, proj_out[0], suffix_embeds], dim=1)
+        inputs_embeds = torch.cat([prefix_embeds, event_features, suffix_embeds], dim=1)
     else:
         inputs_embeds = model.get_model().embed_tokens(input_ids)
 
@@ -231,34 +298,63 @@ def extract_decision(text: str) -> str | None:
     if m:
         return m.group(1).lower()
     # Fallback: last occurrence
-    if "normal" in text.lower()[-200:]:
-        return "normal"
-    if "abnormal" in text.lower()[-200:]:
+    tail = text.lower()[-200:]
+    if "abnormal" in tail:
         return "abnormal"
+    if "normal" in tail:
+        return "normal"
     return None
 
 
 def main():
-    import torch
-
     args = parse_args()
     if str(args.streammind_root) not in sys.path:
         sys.path.insert(0, str(args.streammind_root))
 
-    print(f"Loading checkpoint: {args.checkpoint}")
-    model, tokenizer, image_processor = load_model(args.checkpoint, args.streammind_root)
-    print("Model loaded.")
-
-    from data.streamvad_data import STAGE1_HUMAN_PROMPT, read_streamvad_jsonl, validate_streamvad_row
+    try:
+        from data.streamvad_data import (
+            STAGE1_HUMAN_PROMPT,
+            compute_event_token_indices,
+            read_streamvad_jsonl,
+            validate_streamvad_row,
+        )
+    except ModuleNotFoundError:
+        patch_dir = REPO_ROOT / "patches" / "streammind"
+        sys.path.insert(0, str(patch_dir))
+        from streamvad_data import (
+            STAGE1_HUMAN_PROMPT,
+            compute_event_token_indices,
+            read_streamvad_jsonl,
+            validate_streamvad_row,
+        )
 
     rows = read_streamvad_jsonl(str(args.val_jsonl))
+    for row in rows:
+        if args.allow_missing_video:
+            row = dict(row)
+            row["video"] = __file__
+        validate_streamvad_row(row)
     n = min(args.max_samples or len(rows), len(rows))
     print(f"Val samples: {n}")
+
+    print(f"Loading checkpoint: {args.checkpoint}")
+    model, tokenizer, image_processor = load_model(
+        args.checkpoint,
+        args.streammind_root,
+        base_model=args.base_model,
+        vision_tower=args.vision_tower,
+        flash_attn=args.flash_attn,
+    )
+    print("Model loaded.")
 
     correct = 0
     total = 0
     skipped = 0
     by_label = {"normal": [0, 0], "abnormal": [0, 0]}
+    misses = 0
+    false_alarms = 0
+    unparsed_by_label = {"normal": 0, "abnormal": 0}
+    prediction_rows = []
 
     for i in range(n):
         row = rows[i]
@@ -276,6 +372,15 @@ def main():
                 model, tokenizer, image_processor,
                 pixel_values=pixel_values,
                 prompt=STAGE1_HUMAN_PROMPT,
+                event_token_indices=compute_event_token_indices(
+                    clip_start=float(row["clip_start"]),
+                    clip_end=float(row["clip_end"]),
+                    event_start=float(row["event_start_sec"]),
+                    event_end=float(row["event_end_sec"]),
+                    num_frames=pixel_values.shape[0],
+                    fractions=list(row.get("event_token_fractions") or [0.1, 0.5, 0.9]),
+                ),
+                max_new_tokens=args.max_new_tokens,
             )
         except Exception as e:
             print(f"  [{i}] ERROR: {e}")
@@ -286,6 +391,12 @@ def main():
         total += 1
         if gt in by_label:
             by_label[gt][0] += 1
+        if pred is None and gt in unparsed_by_label:
+            unparsed_by_label[gt] += 1
+        if gt == "abnormal" and pred != "abnormal":
+            misses += 1
+        if gt == "normal" and pred == "abnormal":
+            false_alarms += 1
         if pred == gt:
             correct += 1
             if gt in by_label:
@@ -298,13 +409,55 @@ def main():
         if i % 10 == 0 or pred != gt:
             print(f"  [{i}] {status}")
             print(f"       gt={gt}  output={output[-120:].replace(chr(10), ' ')}")
+        prediction_rows.append(
+            {
+                "index": i,
+                "video": row.get("video"),
+                "video_id": row.get("video_id"),
+                "video_key": row.get("video_key"),
+                "clip_start": row.get("clip_start"),
+                "clip_end": row.get("clip_end"),
+                "event_start_sec": row.get("event_start_sec"),
+                "event_end_sec": row.get("event_end_sec"),
+                "gt": gt,
+                "pred": pred,
+                "correct": pred == gt,
+                "miss": gt == "abnormal" and pred != "abnormal",
+                "false_alarm": gt == "normal" and pred == "abnormal",
+                "unparsed": pred is None,
+                "output": output,
+            }
+        )
 
     print()
-    print(f"Accuracy: {correct}/{total} = {correct / total:.2%}")
+    print(f"Accuracy: {correct}/{total} = {correct / total:.2%}" if total else "Accuracy: no decoded samples")
     for label, (tc, cc) in by_label.items():
         print(f"  {label}: {cc}/{tc} = {cc / tc:.2%}" if tc else f"  {label}: 0 samples")
+    abnormal_total = by_label["abnormal"][0]
+    normal_total = by_label["normal"][0]
+    print(
+        f"Miss rate: {misses}/{abnormal_total} = {misses / abnormal_total:.2%}"
+        if abnormal_total
+        else "Miss rate: 0 abnormal samples"
+    )
+    print(
+        f"False alarm rate: {false_alarms}/{normal_total} = {false_alarms / normal_total:.2%}"
+        if normal_total
+        else "False alarm rate: 0 normal samples"
+    )
+    if any(unparsed_by_label.values()):
+        print(
+            "Unparsed answers: "
+            f"normal={unparsed_by_label['normal']} abnormal={unparsed_by_label['abnormal']}"
+        )
     if skipped:
         print(f"Skipped: {skipped}")
+    if args.output_jsonl is not None:
+        args.output_jsonl.parent.mkdir(parents=True, exist_ok=True)
+        with args.output_jsonl.open("w", encoding="utf-8") as handle:
+            for row in prediction_rows:
+                handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+        print(f"Predictions written to: {args.output_jsonl}")
 
 
 if __name__ == "__main__":

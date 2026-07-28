@@ -50,11 +50,16 @@ class StreamVADDataTests(unittest.TestCase):
         self.assertIn("</think>\n<answer>\nAbnormal\n</answer>", stage1["target_text"])
         self.assertEqual(stage1["event_token_fractions"], [0.1, 0.5, 0.9])
 
-    def test_stage1_skips_normal_rows(self) -> None:
+    def test_stage1_builds_normal_rows(self) -> None:
         args = _args()
         row = _vadr1_row(video="normal", anomaly_type="Normal")
 
-        self.assertIsNone(builder.make_stage1(row, args))
+        stage1 = builder.make_stage1(row, args)
+
+        self.assertIsNotNone(stage1)
+        assert stage1 is not None
+        self.assertEqual(stage1["answer"], "normal")
+        self.assertIn("</think>\n<answer>\nNormal\n</answer>", stage1["target_text"])
 
     def test_stage1_loader_rejects_event_outside_clip(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -158,9 +163,9 @@ class StreamVADDataTests(unittest.TestCase):
             stage2_rows = _read_jsonl(output_dir / "streamvad_stage2_train.jsonl")
             stage2_rows.extend(_read_jsonl(output_dir / "streamvad_stage2_val.jsonl"))
 
-            self.assertEqual(len(stage1_rows), 1)
-            self.assertEqual(stage1_rows[0]["answer"], "abnormal")
-            self.assertTrue(stage1_rows[0]["target_text"].startswith("<think>\n"))
+            self.assertEqual(len(stage1_rows), 2)
+            self.assertEqual({row["answer"] for row in stage1_rows}, {"normal", "abnormal"})
+            self.assertTrue(all(row["target_text"].startswith("<think>\n") for row in stage1_rows))
             self.assertLessEqual({row["gate_action"] for row in stage2_rows}, {"hold", "trigger", "ignore"})
 
 
@@ -174,6 +179,7 @@ def _args():
             "fps": 30.0,
             "pre_context_sec": 2.0,
             "post_context_sec": 2.0,
+            "normal_clip_sec": 10.0,
             "chunk_duration_sec": 1.0,
             "boundary_radius_sec": 1.0,
         },
