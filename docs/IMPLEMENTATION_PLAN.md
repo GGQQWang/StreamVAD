@@ -136,7 +136,7 @@ scripts/server_train_streamvad_stage2_gate.sh
 scripts/server_eval_streamvad_stage1.sh
 ```
 
-Stage2 training and extended evaluation are explicit server-side placeholders until the cls-trainer adapter and richer metrics are implemented.
+Stage2 training remains a server-side placeholder until the cls-trainer adapter is implemented. Stage1 inference writes optional prediction JSONL, and Stage1 evaluation can summarize that file for accuracy, miss rate, false alarm rate, and unparsed answers.
 
 ## Expected Outputs
 
@@ -150,9 +150,10 @@ Stage2 training and extended evaluation are explicit server-side placeholders un
   - LoRA checkpoints under `output/streamvad_stage1_lora` unless `OUTPUT_DIR` overrides it.
   - Generated targets should use `<think>...</think><answer>Normal|Abnormal</answer>`.
   - Inference prints overall accuracy plus per-label normal/abnormal accuracy.
+  - Optional prediction JSONL records per-sample `miss`, `false_alarm`, and `unparsed` flags.
 
 ## Remaining Work
 
 - Implement a StreamVAD Stage2 cls adapter that trains hold/trigger without using tokenizer token ids.
-- Add Stage1 inference JSONL writer and richer CoT/answer evaluation.
+- Add richer Stage1 CoT quality evaluation beyond answer-level metrics.
 - Add Stage2 trigger metrics: precision, recall, F1, boundary latency, duplicate trigger rate.

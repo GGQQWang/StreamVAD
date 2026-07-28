@@ -173,11 +173,11 @@ With this option, non-dry-run generation raises an error if any row lacks reliab
 
 ## Class Weights
 
-Stage 2 is highly imbalanced, so the first version keeps weighted cross-entropy rather than downsampling silence. The old StreamMind-style `0.15/0.85` weights should not be assumed correct for this data.
+Stage 2 is highly imbalanced, so the first version keeps weighted cross-entropy rather than downsampling `hold`. The old StreamMind-style `0.15/0.85` weights should not be assumed correct for this data.
 
 The converter reports training-set class weights while excluding `-100` ignore rows. Supported strategies:
 
-- `--manual-class-weights silence,response`
+- `--manual-class-weights hold,trigger`
 - `--weight-strategy inverse_frequency`
 - `--weight-strategy normalized_inverse_frequency`
 - `--weight-strategy effective_number`
@@ -203,7 +203,7 @@ The audit sampler is:
 
 - `tools/audit_streamvad_compact_cot.py`
 
-It reads Stage 1 converted JSONL and writes a human-review table. Stage 1 v0 contains abnormal rows only.
+It reads Stage 1 converted JSONL and writes a human-review table. Stage 1 currently contains both normal and abnormal rows, with normal rows using a configured leading clip window.
 
 Example:
 
@@ -259,10 +259,10 @@ Statistics:
 - Abnormal videos: `814`
 - Stage 1 normal samples: `941`
 - Stage 1 abnormal samples: `814`
-- Stage 2 response chunks: `3052`
-- Stage 2 silence chunks: `238066`
+- Stage 2 trigger chunks: `3052`
+- Stage 2 hold chunks: `238066`
 - Stage 2 ignore chunks: `3616`
-- Response/silence ratio: `0.012820`
+- Trigger/hold ratio: `0.012820`
 - Final `trigger_reason=initialization`: `1425`
 - Final `trigger_reason=anomaly_start`: `814`
 - Final `trigger_reason=anomaly_end`: `813`
@@ -278,7 +278,7 @@ Statistics:
 - Unreliable timing rows: `1755`
 - Missing `think` or `answer`: `0`
 - `needs_review`: `1`
-- Recommended normalized inverse-frequency train weights: silence `0.506535`, response `38.754727`
+- Recommended normalized inverse-frequency train weights: hold `0.506535`, trigger `38.754727`
 
 Because all local video paths are missing, this generated output is a format-validation artifact. It should be regenerated with real videos and `--require-reliable-timing` before formal Stage 2 training.
 
@@ -370,6 +370,6 @@ Additional limitations:
 - The current local generated files use fallback FPS because no videos are present.
 - Formal Stage 2 data must be regenerated with real video FPS and `--require-reliable-timing`.
 - Stage 1 compact text is rule-extracted and still needs human audit.
-- Normal videos do not contain event boundaries, so only initialization is supervised as response.
-- `ignore` chunks require downstream training code to use `ignore_index=-100`; the current work does not modify training code.
-- A loader still needs to map `clip_start/clip_end` and `chunk_start/chunk_end` into actual video decoding.
+- Normal videos do not contain anomaly event boundaries, so Stage 2 currently supervises only `hold` windows for them unless a separate summary-trigger task is deliberately added.
+- `ignore` chunks require downstream training code to use `ignore_index=-100`.
+- The loaders map `clip_start/clip_end` and `chunk_start/chunk_end` into video decoding when `decode_video=True`.

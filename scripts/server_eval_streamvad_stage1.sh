@@ -4,9 +4,54 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${STREAMVAD_ROOT:-${REPO_ROOT}}"
 
-echo "Stage1 evaluation entry is pending generated-output JSONL integration."
-echo "Minimum metrics to report after inference is wired:"
-echo "  answer-format validity"
-echo "  abnormal-answer recall on event clips"
-echo "  CoT audit sample quality"
-echo "  invalid or missing <think>/<answer> tag rate"
+: "${PRED_JSONL:?set PRED_JSONL to the JSONL written by tools/infer_stage1_val.py --output-jsonl}"
+
+python - "${PRED_JSONL}" <<'PY'
+import json
+import sys
+from collections import Counter
+from pathlib import Path
+
+path = Path(sys.argv[1])
+rows = []
+with path.open("r", encoding="utf-8") as handle:
+    for line_no, line in enumerate(handle, start=1):
+        line = line.strip()
+        if not line:
+            continue
+        row = json.loads(line)
+        missing = {"gt", "pred", "correct", "miss", "false_alarm", "unparsed"} - set(row)
+        if missing:
+            raise ValueError(f"{path}:{line_no}: missing fields {sorted(missing)}")
+        rows.append(row)
+
+if not rows:
+    raise ValueError(f"{path}: no prediction rows")
+
+total = len(rows)
+correct = sum(bool(row["correct"]) for row in rows)
+labels = Counter(row["gt"] for row in rows)
+correct_by_label = Counter(row["gt"] for row in rows if row["correct"])
+misses = [row for row in rows if row["miss"]]
+false_alarms = [row for row in rows if row["false_alarm"]]
+unparsed = [row for row in rows if row["unparsed"]]
+
+def pct(num, den):
+    return f"{num / den:.2%}" if den else "n/a"
+
+print(f"Predictions: {path}")
+print(f"Accuracy: {correct}/{total} = {pct(correct, total)}")
+for label in ("normal", "abnormal"):
+    count = labels[label]
+    hit = correct_by_label[label]
+    print(f"  {label}: {hit}/{count} = {pct(hit, count)}")
+print(f"Miss rate: {len(misses)}/{labels['abnormal']} = {pct(len(misses), labels['abnormal'])}")
+print(f"False alarm rate: {len(false_alarms)}/{labels['normal']} = {pct(len(false_alarms), labels['normal'])}")
+print(f"Unparsed answers: {len(unparsed)}")
+
+if misses:
+    print("First miss examples:")
+    for row in misses[:10]:
+        key = row.get("video_key") or row.get("video_id") or row.get("video")
+        print(f"  index={row.get('index')} key={key} pred={row.get('pred')}")
+PY
