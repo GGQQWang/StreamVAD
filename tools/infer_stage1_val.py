@@ -159,7 +159,8 @@ def generate_text(
     from streammind.mm_utils import tokenizer_MMODAL_token
 
     input_ids = tokenizer_MMODAL_token(prompt, tokenizer, MMODAL_TOKEN_INDEX["VIDEO"], return_tensors="pt")
-    input_ids = input_ids.to(model.device)
+    input_ids = input_ids.to("cuda:0")
+    pixel_values = pixel_values.to(device="cuda:0", dtype=model.dtype)
 
     # Run CLIP in chunks
     import einops
@@ -167,7 +168,7 @@ def generate_text(
     VT_CHUNK = 8
     all_features = []
     for i in range(0, pixel_values.shape[0], VT_CHUNK):
-        chunk = pixel_values[i : i + VT_CHUNK].to(device=model.device, dtype=model.dtype)
+        chunk = pixel_values[i : i + VT_CHUNK]
         with torch.no_grad():
             feat = model.get_model().get_vision_tower()(chunk)
         all_features.append(feat)
