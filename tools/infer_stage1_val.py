@@ -177,7 +177,7 @@ def generate_text(
     from streammind.mm_utils import tokenizer_MMODAL_token
 
     input_ids = tokenizer_MMODAL_token(prompt, tokenizer, MMODAL_TOKEN_INDEX["VIDEO"], return_tensors="pt")
-    input_ids = input_ids.to("cuda:0")
+    input_ids = input_ids.unsqueeze(0).to("cuda:0")  # 1D→2D [1, seq_len]
     pixel_values = pixel_values.to(device="cuda:0", dtype=model.dtype)
 
     # Run CLIP in chunks
