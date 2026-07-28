@@ -100,6 +100,16 @@ def load_model(checkpoint_dir: Path, streammind_root: Path) -> Any:
         p.requires_grad = False
     model.get_model().mm_projector.to(device=0, dtype=torch.bfloat16)
 
+    # Load EPFE (mamba projector) weights from non_lora_trainables.bin
+    nlt_path = checkpoint_dir / "non_lora_trainables.bin"
+    if nlt_path.exists():
+        nlt = torch.load(nlt_path, map_location="cpu")
+        nlt = {(k[11:] if k.startswith("base_model.") else k): v for k, v in nlt.items()}
+        if any(k.startswith("model.model.") for k in nlt):
+            nlt = {(k[6:] if k.startswith("model.") else k): v for k, v in nlt.items()}
+        model.load_state_dict(nlt, strict=False)
+        print("non_lora_trainables loaded.")
+
     model = PeftModel.from_pretrained(model, str(checkpoint_dir))
     model = model.merge_and_unload()
     model.eval()
