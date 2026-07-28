@@ -117,12 +117,13 @@ def load_model(checkpoint_dir: Path, streammind_root: Path) -> Any:
     tokenizer = AutoTokenizer.from_pretrained(str(checkpoint_dir), use_fast=True)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.unk_token
-    # Add video modal token and update index (same as training)
-    from streammind.constants import DEFAULT_MMODAL_TOKEN, MMODAL_TOKEN_INDEX
+    # Add video modal token and update both index maps (same as training)
+    from streammind.constants import DEFAULT_MMODAL_TOKEN, MMODAL_TOKEN_INDEX, MMODAL_INDEX_TOKEN
     for token_name, token_str in DEFAULT_MMODAL_TOKEN.items():
         tokenizer.add_tokens([token_str], special_tokens=True)
-        MMODAL_TOKEN_INDEX[token_name] = tokenizer(token_str, add_special_tokens=False).input_ids[0]
-    print(f"MMODAL_TOKEN_INDEX[VIDEO] = {MMODAL_TOKEN_INDEX['VIDEO']}")
+        tid = tokenizer(token_str, add_special_tokens=False).input_ids[0]
+        MMODAL_TOKEN_INDEX[token_name] = tid
+        MMODAL_INDEX_TOKEN[tid] = token_name
 
     return model, tokenizer, vt.image_processor
 
