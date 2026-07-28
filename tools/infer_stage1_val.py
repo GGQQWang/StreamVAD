@@ -158,13 +158,40 @@ def load_model(
 
     # Load EPFE (mamba projector) weights from non_lora_trainables.bin
     nlt_path = checkpoint_dir / "non_lora_trainables.bin"
-    if nlt_path.exists():
-        nlt = torch.load(nlt_path, map_location="cpu")
-        nlt = {(k[11:] if k.startswith("base_model.") else k): v for k, v in nlt.items()}
-        if any(k.startswith("model.model.") for k in nlt):
-            nlt = {(k[6:] if k.startswith("model.") else k): v for k, v in nlt.items()}
-        model.load_state_dict(nlt, strict=False)
-        print("non_lora_trainables loaded.")
+    if not nlt_path.exists():
+        raise FileNotFoundError(
+            f"missing non_lora_trainables.bin in checkpoint: {checkpoint_dir}. "
+            "Stage1 inference needs the trained mm_projector/mamba weights."
+        )
+    nlt = torch.load(nlt_path, map_location="cpu")
+    nlt = {(k[11:] if k.startswith("base_model.") else k): v for k, v in nlt.items()}
+    if any(k.startswith("model.model.") for k in nlt):
+        nlt = {(k[6:] if k.startswith("model.") else k): v for k, v in nlt.items()}
+    projector_keys = [k for k in nlt if "mm_projector" in k and "cls_net" not in k]
+    if not projector_keys:
+        raise ValueError(
+            f"{nlt_path} does not contain non-cls mm_projector weights; "
+            "the Stage1 projector would remain randomly initialized."
+        )
+    load_result = model.load_state_dict(nlt, strict=False)
+    loaded_projector = [
+        k for k in projector_keys
+        if k not in set(load_result.unexpected_keys)
+    ]
+    missing_projector = [
+        k for k in load_result.missing_keys
+        if "mm_projector" in k and "cls_net" not in k
+    ]
+    print(
+        "non_lora_trainables loaded: "
+        f"projector_keys={len(projector_keys)} "
+        f"accepted_projector_keys={len(loaded_projector)} "
+        f"missing_projector_keys={len(missing_projector)} "
+        f"unexpected_keys={len(load_result.unexpected_keys)}"
+    )
+    if missing_projector:
+        preview = ", ".join(missing_projector[:5])
+        raise RuntimeError(f"missing trained projector keys after load: {preview}")
 
     if (checkpoint_dir / "adapter_config.json").exists():
         model = PeftModel.from_pretrained(model, str(checkpoint_dir))
