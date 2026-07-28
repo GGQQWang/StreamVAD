@@ -284,8 +284,17 @@ def generate_text(
         inputs_embeds = model.get_model().embed_tokens(input_ids)
 
     with torch.no_grad():
-        output_ids = model.generate(
+        from transformers import MistralForCausalLM
+
+        attention_mask = torch.ones(
+            inputs_embeds.shape[:2],
+            dtype=torch.long,
+            device=inputs_embeds.device,
+        )
+        output_ids = MistralForCausalLM.generate(
+            model,
             inputs_embeds=inputs_embeds,
+            attention_mask=attention_mask,
             max_new_tokens=max_new_tokens,
             do_sample=False,
             pad_token_id=tokenizer.pad_token_id,
@@ -384,6 +393,27 @@ def main():
             )
         except Exception as e:
             print(f"  [{i}] ERROR: {e}")
+            prediction_rows.append(
+                {
+                    "index": i,
+                    "video": row.get("video"),
+                    "video_id": row.get("video_id"),
+                    "video_key": row.get("video_key"),
+                    "clip_start": row.get("clip_start"),
+                    "clip_end": row.get("clip_end"),
+                    "event_start_sec": row.get("event_start_sec"),
+                    "event_end_sec": row.get("event_end_sec"),
+                    "gt": gt,
+                    "pred": None,
+                    "correct": False,
+                    "miss": gt == "abnormal",
+                    "false_alarm": False,
+                    "unparsed": True,
+                    "skipped": True,
+                    "error": str(e),
+                    "output": "",
+                }
+            )
             skipped += 1
             continue
 
@@ -425,6 +455,7 @@ def main():
                 "miss": gt == "abnormal" and pred != "abnormal",
                 "false_alarm": gt == "normal" and pred == "abnormal",
                 "unparsed": pred is None,
+                "skipped": False,
                 "output": output,
             }
         )

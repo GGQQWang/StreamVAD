@@ -29,18 +29,21 @@ if not rows:
     raise ValueError(f"{path}: no prediction rows")
 
 total = len(rows)
-correct = sum(bool(row["correct"]) for row in rows)
-labels = Counter(row["gt"] for row in rows)
-correct_by_label = Counter(row["gt"] for row in rows if row["correct"])
-misses = [row for row in rows if row["miss"]]
-false_alarms = [row for row in rows if row["false_alarm"]]
-unparsed = [row for row in rows if row["unparsed"]]
+skipped = [row for row in rows if row.get("skipped")]
+scored_rows = [row for row in rows if not row.get("skipped")]
+correct = sum(bool(row["correct"]) for row in scored_rows)
+labels = Counter(row["gt"] for row in scored_rows)
+correct_by_label = Counter(row["gt"] for row in scored_rows if row["correct"])
+misses = [row for row in scored_rows if row["miss"]]
+false_alarms = [row for row in scored_rows if row["false_alarm"]]
+unparsed = [row for row in scored_rows if row["unparsed"]]
 
 def pct(num, den):
     return f"{num / den:.2%}" if den else "n/a"
 
 print(f"Predictions: {path}")
-print(f"Accuracy: {correct}/{total} = {pct(correct, total)}")
+print(f"Rows: {total}  scored: {len(scored_rows)}  skipped: {len(skipped)}")
+print(f"Accuracy: {correct}/{len(scored_rows)} = {pct(correct, len(scored_rows))}")
 for label in ("normal", "abnormal"):
     count = labels[label]
     hit = correct_by_label[label]
