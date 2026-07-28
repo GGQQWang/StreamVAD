@@ -117,6 +117,9 @@ def load_model(checkpoint_dir: Path, streammind_root: Path) -> Any:
     tokenizer = AutoTokenizer.from_pretrained(str(checkpoint_dir), use_fast=True)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.unk_token
+    # Add video modal token (same as training)
+    from streammind.constants import DEFAULT_MMODAL_TOKEN
+    tokenizer.add_tokens(list(DEFAULT_MMODAL_TOKEN.values()), special_tokens=True)
 
     return model, tokenizer, vt.image_processor
 
