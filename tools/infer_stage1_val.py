@@ -258,6 +258,10 @@ def main():
                 pixel_values=pixel_values,
                 prompt=STAGE1_HUMAN_PROMPT,
             )
+        except Exception as e:
+            print(f"  [{i}] ERROR: {e}")
+            skipped += 1
+            continue
 
         pred = extract_decision(output)
         total += 1
