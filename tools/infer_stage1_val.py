@@ -93,11 +93,12 @@ def load_model(checkpoint_dir: Path, streammind_root: Path) -> Any:
         )(),
     )
 
-    # Freeze vision tower
+    # Move vision tower + mamba projector to GPU
     vt = model.get_vision_tower()
     vt.to(dtype=torch.bfloat16, device=0)
     for p in vt.parameters():
         p.requires_grad = False
+    model.get_model().mm_projector.to(device=0, dtype=torch.bfloat16)
 
     model = PeftModel.from_pretrained(model, str(checkpoint_dir))
     model = model.merge_and_unload()
