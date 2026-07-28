@@ -347,19 +347,50 @@ def generate_text(
     return tokenizer.decode(output_ids[0], skip_special_tokens=True).strip()
 
 
-def extract_decision(text: str) -> str | None:
+def extract_decision_with_method(text: str) -> tuple[str | None, str]:
     m = re.search(r"<answer>\s*(Normal|Abnormal)\s*</answer>", text, re.IGNORECASE)
     if m:
-        return m.group(1).lower()
+        return m.group(1).lower(), "answer_tag_closed"
+    m = re.search(r"<answer>\s*(Normal|Abnormal)\b", text, re.IGNORECASE)
+    if m:
+        return m.group(1).lower(), "answer_tag_open"
     if re.search(r"</?answer\b", text, re.IGNORECASE):
-        return None
-    # Fallback: last occurrence
+        answer_tail = re.split(r"<answer\b[^>]*>", text, flags=re.IGNORECASE)[-1]
+        answer_tail = re.split(r"</answer>", answer_tail, flags=re.IGNORECASE)[0]
+        decision = _last_label_token(answer_tail)
+        if decision is not None:
+            return decision, "answer_tag_loose"
+        return None, "answer_tag_unparsed"
+
     tail = text.lower()[-200:]
-    if "abnormal" in tail:
-        return "abnormal"
-    if "normal" in tail:
-        return "normal"
-    return None
+    phrase_patterns = [
+        (r"\b(?:final\s+)?(?:answer|decision|classification|label)\s*(?:is|:)?\s*(abnormal|normal)\b", "explicit_decision_phrase"),
+        (r"\b(?:classified|classifies)\s+as\s+(abnormal|normal)\b", "classified_as_phrase"),
+        (r"\b(?:the\s+)?(?:video|clip|scene|behavior)\s+is\s+(abnormal|normal)\b", "is_label_phrase"),
+    ]
+    for pattern, method in phrase_patterns:
+        matches = list(re.finditer(pattern, tail, flags=re.IGNORECASE))
+        if matches:
+            return matches[-1].group(1).lower(), method
+
+    decision = _last_label_token(tail)
+    if decision is not None:
+        return decision, "tail_label_token"
+    return None, "unparsed"
+
+
+def extract_decision(text: str) -> str | None:
+    return extract_decision_with_method(text)[0]
+
+
+def _last_label_token(text: str) -> str | None:
+    labels = [
+        (match.start(), match.group(1).lower())
+        for match in re.finditer(r"\b(abnormal|normal)\b", text, flags=re.IGNORECASE)
+    ]
+    if not labels:
+        return None
+    return labels[-1][1]
 
 
 def main():
@@ -450,8 +481,12 @@ def main():
                     "clip_end": row.get("clip_end"),
                     "event_start_sec": row.get("event_start_sec"),
                     "event_end_sec": row.get("event_end_sec"),
+                    "target_text": row.get("target_text"),
+                    "observation": row.get("observation"),
+                    "reason": row.get("reason"),
                     "gt": gt,
                     "pred": None,
+                    "decision_parse_method": "error",
                     "correct": False,
                     "miss": gt == "abnormal",
                     "false_alarm": False,
@@ -464,7 +499,7 @@ def main():
             skipped += 1
             continue
 
-        pred = extract_decision(output)
+        pred, parse_method = extract_decision_with_method(output)
         total += 1
         if gt in by_label:
             by_label[gt][0] += 1
@@ -496,8 +531,12 @@ def main():
                 "clip_end": row.get("clip_end"),
                 "event_start_sec": row.get("event_start_sec"),
                 "event_end_sec": row.get("event_end_sec"),
+                "target_text": row.get("target_text"),
+                "observation": row.get("observation"),
+                "reason": row.get("reason"),
                 "gt": gt,
                 "pred": pred,
+                "decision_parse_method": parse_method,
                 "correct": pred == gt,
                 "miss": gt == "abnormal" and pred != "abnormal",
                 "false_alarm": gt == "normal" and pred == "abnormal",

@@ -14,6 +14,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from streamvad.data import GATE_CLASS_IDS, StreamVADStage1Dataset, StreamVADStage2GateDataset
 from tools import build_streamvad_weak_supervision as builder
+from tools.infer_stage1_val import extract_decision, extract_decision_with_method
 from tools.train_streamvad_stage1_lora import compute_event_token_indices
 
 
@@ -167,6 +168,23 @@ class StreamVADDataTests(unittest.TestCase):
             self.assertEqual({row["answer"] for row in stage1_rows}, {"normal", "abnormal"})
             self.assertTrue(all(row["target_text"].startswith("<think>\n") for row in stage1_rows))
             self.assertLessEqual({row["gate_action"] for row in stage2_rows}, {"hold", "trigger", "ignore"})
+
+    def test_extract_decision_accepts_unclosed_answer_tag(self) -> None:
+        self.assertEqual(extract_decision("<think>x</think> <answer> Abnormal"), "abnormal")
+        self.assertEqual(extract_decision("<answer> Normal </answer>"), "normal")
+
+    def test_extract_decision_handles_loose_final_phrases(self) -> None:
+        self.assertEqual(
+            extract_decision("The clip has a visible collapse. Final decision: Abnormal."),
+            "abnormal",
+        )
+        self.assertEqual(
+            extract_decision("The behavior is consistent with normal activity patterns."),
+            "normal",
+        )
+        pred, method = extract_decision_with_method("The scene is not fully clear.")
+        self.assertIsNone(pred)
+        self.assertEqual(method, "unparsed")
 
 
 def _args():

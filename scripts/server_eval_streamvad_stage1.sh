@@ -37,6 +37,7 @@ correct_by_label = Counter(row["gt"] for row in scored_rows if row["correct"])
 misses = [row for row in scored_rows if row["miss"]]
 false_alarms = [row for row in scored_rows if row["false_alarm"]]
 unparsed = [row for row in scored_rows if row["unparsed"]]
+parse_methods = Counter(row.get("decision_parse_method", "unknown") for row in scored_rows)
 
 def pct(num, den):
     return f"{num / den:.2%}" if den else "n/a"
@@ -51,6 +52,9 @@ for label in ("normal", "abnormal"):
 print(f"Miss rate: {len(misses)}/{labels['abnormal']} = {pct(len(misses), labels['abnormal'])}")
 print(f"False alarm rate: {len(false_alarms)}/{labels['normal']} = {pct(len(false_alarms), labels['normal'])}")
 print(f"Unparsed answers: {len(unparsed)}")
+print("Parse methods:")
+for method, count in sorted(parse_methods.items()):
+    print(f"  {method}: {count}")
 
 if misses:
     print("First miss examples:")
