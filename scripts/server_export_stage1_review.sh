@@ -51,7 +51,11 @@ with review_path.open("w", encoding="utf-8") as out:
         out.write(f"- parsed_pred: `{row.get('pred')}`\n")
         out.write(f"- parse_method: `{row.get('decision_parse_method', 'unknown')}`\n")
         out.write(f"- miss: `{row.get('miss')}` false_alarm: `{row.get('false_alarm')}` unparsed: `{row.get('unparsed')}` skipped: `{row.get('skipped', False)}`\n")
+        if row.get("jsonl_path") or row.get("jsonl_line"):
+            out.write(f"- source_jsonl: `{row.get('jsonl_path')}` line `{row.get('jsonl_line')}`\n")
         out.write(f"- video: `{row.get('video')}`\n")
+        if row.get("original_video"):
+            out.write(f"- original_video: `{row.get('original_video')}`\n")
         out.write(f"- window: `{row.get('clip_start')}` to `{row.get('clip_end')}`; event: `{row.get('event_start_sec')}` to `{row.get('event_end_sec')}`\n\n")
 
         if row.get("observation") or row.get("reason"):
@@ -64,6 +68,12 @@ with review_path.open("w", encoding="utf-8") as out:
             out.write("### GT Target Text\n\n")
             out.write("```text\n")
             out.write(block(row.get("target_text")))
+            out.write("\n```\n\n")
+
+        if row.get("original_answer"):
+            out.write("### Original Answer\n\n")
+            out.write("```text\n")
+            out.write(block(row.get("original_answer")))
             out.write("\n```\n\n")
 
         out.write("### Model Output\n\n")

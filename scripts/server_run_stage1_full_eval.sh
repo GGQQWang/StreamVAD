@@ -27,3 +27,6 @@ echo "  review_md:   ${REVIEW_MD}"
 scripts/server_infer_streamvad_stage1.sh
 scripts/server_eval_streamvad_stage1.sh
 scripts/server_export_stage1_review.sh
+if [[ "${EXPORT_FRAMES:-0}" == "1" ]]; then
+  scripts/server_export_stage1_review_frames.sh
+fi
